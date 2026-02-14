@@ -16,10 +16,13 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 def merge_tags(series):
-    # Combine tags, split by asterisk, and return unique set
     all_tags = "*".join(series.astype(str)).split('*')
     unique_tags = sorted(list(set([t.strip() for t in all_tags if t.strip()])))
     return " * ".join(unique_tags)
+
+def merge_rows(series):
+    # Combines original row numbers into a string for traceability
+    return ", ".join(series.astype(str))
 
 @st.cache_data(ttl=3600)
 def load_data():
@@ -29,21 +32,22 @@ def load_data():
     try:
         sheet = client.open("SAMHSA_Master_Data").sheet1
         df = pd.DataFrame(sheet.get_all_records())
+        # Store original row number (Sheets starts at 1, header is 1, so data starts at 2)
+        df['orig_row'] = df.index + 2
         
-        # --- SMART DEDUPLICATION ---
+        # --- DEDUPLICATION ---
         df['city_clean'] = df['city'].astype(str).str.title()
         df['state_clean'] = df['state'].astype(str).str.upper()
         
         rollup = df.groupby(['name1', 'city_clean', 'state_clean']).agg({
             'service_code_info': merge_tags,
-            'phone': 'first'
+            'phone': 'first',
+            'orig_row': merge_rows
         }).reset_index()
         
-        # Re-create clean Location and metadata
         rollup['Location'] = rollup['city_clean'] + ", " + rollup['state_clean']
         rollup['raw_comp'] = rollup['service_code_info'].str.split('*').str.len()
         
-        # Calculate Propensity as an INTEGER
         u_max = rollup['raw_comp'].max()
         rollup['Propensity Score'] = ((rollup['raw_comp'] / u_max) * 100).round(0).astype(int)
         
@@ -62,12 +66,15 @@ inc_hosp = st.sidebar.checkbox("Hospital / Inpatient")
 st.sidebar.divider()
 
 st.sidebar.subheader("Propensity Threshold")
-# Slider now snaps to whole integers
-min_propensity = st.sidebar.slider(
-    "Min. Propensity Score", 
-    0, 100, 40, 
-    step=1
-)
+min_propensity = st.sidebar.slider("Min. Propensity Score", 0, 100, 40, step=1)
+
+# New Legend of Inputs
+st.sidebar.info(f"""
+**Score Drivers:**
+* **Scale:** Based on {u_max} total service tags.
+* **100:** Merged SUD/MH licenses + Full Continuum.
+* **80:** High-density specialty programs.
+""")
 
 st.sidebar.divider()
 
@@ -80,7 +87,6 @@ max_show = st.sidebar.number_input("Max Rows Shown", value=1000)
 d, u_max, total_raw = load_data()
 d_filtered = d.copy()
 
-# Filter by Care Types
 patterns = []
 if inc_res: patterns.append("RES|RL|RS")
 if inc_dtx: patterns.append("DT")
@@ -92,33 +98,23 @@ if patterns:
 else:
     d_filtered = pd.DataFrame(columns=d.columns)
 
-# Thresholds & Preferences
 d_filtered = d_filtered[d_filtered['Propensity Score'] >= min_propensity]
 if exclude_gov:
     d_filtered = d_filtered[~d_filtered['service_code_info'].str.contains('STG|FED|VAMC', case=False, na=False)]
 if only_private:
     d_filtered = d_filtered[d_filtered['service_code_info'].str.contains('PVTP', case=False, na=False)]
 
-# Rank by score
 d_filtered = d_filtered.sort_values(by=['Propensity Score', 'name1'], ascending=[False, True])
 
 # --- 4. MAIN OUTPUT PANE ---
 st.title("📊 Scored Prospects")
 
-with st.expander("ℹ️ Propensity Score Parameter Key"):
-    st.markdown(f"""
-    **Propensity Logic:** Scores are relative to the maximum of **{u_max}** unique service tags.
-    * **100:** Absolute Top Tier. Facilities with fully integrated SUD & MH capabilities.
-    * **90+:** Highly Institutional campuses.
-    * **80+:** Comprehensive professional standard.
-    """)
-
 # Metrics
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Raw Universe", f"{total_raw:,}")
+m1.metric("Universe Total", f"{total_raw:,}")
 m2.metric("Qualifying Facilities", f"{len(d_filtered):,}")
 m3.metric("Avg Propensity", f"{int(d_filtered['Propensity Score'].mean()) if not d_filtered.empty else 0}%")
-m4.metric("Propensity Floor", f"{min_propensity}%")
+m4.metric("Score Ceiling", f"{u_max} Tags")
 
 # Filters
 c_search, c_state = st.columns(2)
@@ -133,10 +129,14 @@ output_df = d_filtered.head(max_show).reset_index(drop=True)
 output_df.index = output_df.index + 1
 output_df.index.name = "Rank"
 
-output_df = output_df.rename(columns={'name1': 'Facility Name', 'phone': 'Phone'})
+output_df = output_df.rename(columns={
+    'name1': 'Facility Name', 
+    'phone': 'Phone',
+    'orig_row': 'Source Row(s)'
+})
 
 st.dataframe(
-    output_df[['Facility Name', 'Location', 'Phone', 'Propensity Score']], 
+    output_df[['Facility Name', 'Location', 'Phone', 'Propensity Score', 'Source Row(s)']], 
     use_container_width=True,
     height=550
 )
