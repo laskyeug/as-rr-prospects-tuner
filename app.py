@@ -16,12 +16,12 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 def merge_tags(series):
+    # Combine tags, split by asterisk, and return unique set
     all_tags = "*".join(series.astype(str)).split('*')
     unique_tags = sorted(list(set([t.strip() for t in all_tags if t.strip()])))
     return " * ".join(unique_tags)
 
 def merge_rows(series):
-    # Combines original row numbers into a string for traceability
     return ", ".join(series.astype(str))
 
 @st.cache_data(ttl=3600)
@@ -32,10 +32,13 @@ def load_data():
     try:
         sheet = client.open("SAMHSA_Master_Data").sheet1
         df = pd.DataFrame(sheet.get_all_records())
-        # Store original row number (Sheets starts at 1, header is 1, so data starts at 2)
         df['orig_row'] = df.index + 2
         
-        # --- DEDUPLICATION ---
+        # --- SAFE DEDUPLICATION ---
+        # Fill NA to prevent "nan" in Location
+        df['city'] = df['city'].fillna('')
+        df['state'] = df['state'].fillna('')
+        
         df['city_clean'] = df['city'].astype(str).str.title()
         df['state_clean'] = df['state'].astype(str).str.upper()
         
@@ -45,15 +48,23 @@ def load_data():
             'orig_row': merge_rows
         }).reset_index()
         
-        rollup['Location'] = rollup['city_clean'] + ", " + rollup['state_clean']
+        # Create Clean Location
+        rollup['Location'] = rollup.apply(
+            lambda x: f"{x['city_clean']}, {x['state_clean']}" if x['city_clean'] else x['state_clean'], 
+            axis=1
+        )
+        
         rollup['raw_comp'] = rollup['service_code_info'].str.split('*').str.len()
         
-        u_max = rollup['raw_comp'].max()
+        u_max = rollup['raw_comp'].max() if not rollup.empty else 1
         rollup['Propensity Score'] = ((rollup['raw_comp'] / u_max) * 100).round(0).astype(int)
         
         return rollup, u_max, len(df)
     except Exception as e:
         st.error(f"❌ Connection Failed: {e}"); st.stop()
+
+# Load Data
+d, u_max, total_raw = load_data()
 
 # --- 2. TUNER RIBBON ---
 st.sidebar.title("🎯 Prospect Filters")
@@ -68,12 +79,11 @@ st.sidebar.divider()
 st.sidebar.subheader("Propensity Threshold")
 min_propensity = st.sidebar.slider("Min. Propensity Score", 0, 100, 40, step=1)
 
-# New Legend of Inputs
+# Sidebar Legend
 st.sidebar.info(f"""
-**Score Drivers:**
-* **Scale:** Based on {u_max} total service tags.
-* **100:** Merged SUD/MH licenses + Full Continuum.
-* **80:** High-density specialty programs.
+**Score Drivers (Max: {u_max} Tags):**
+* **100:** Merged SUD/MH + Full Continuum.
+* **80+:** High-density specialty programs.
 """)
 
 st.sidebar.divider()
@@ -84,7 +94,6 @@ only_private = st.sidebar.toggle("Only Private For-Profit")
 max_show = st.sidebar.number_input("Max Rows Shown", value=1000)
 
 # --- 3. FILTER ENGINE ---
-d, u_max, total_raw = load_data()
 d_filtered = d.copy()
 
 patterns = []
@@ -99,12 +108,14 @@ else:
     d_filtered = pd.DataFrame(columns=d.columns)
 
 d_filtered = d_filtered[d_filtered['Propensity Score'] >= min_propensity]
+
 if exclude_gov:
     d_filtered = d_filtered[~d_filtered['service_code_info'].str.contains('STG|FED|VAMC', case=False, na=False)]
 if only_private:
     d_filtered = d_filtered[d_filtered['service_code_info'].str.contains('PVTP', case=False, na=False)]
 
-d_filtered = d_filtered.sort_values(by=['Propensity Score', 'name1'], ascending=[False, True])
+# Sort: Score -> Location -> Name (Keeps regions together in ties)
+d_filtered = d_filtered.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
 
 # --- 4. MAIN OUTPUT PANE ---
 st.title("📊 Scored Prospects")
@@ -125,20 +136,33 @@ if search: d_filtered = d_filtered[d_filtered['name1'].str.lower().str.contains(
 if states: d_filtered = d_filtered[d_filtered['state_clean'].isin(states)]
 
 # Table Display
-output_df = d_filtered.head(max_show).reset_index(drop=True)
-output_df.index = output_df.index + 1
-output_df.index.name = "Rank"
+if d_filtered.empty:
+    st.warning("⚠️ No prospects found. Try lowering the Propensity Threshold or adding more Care Types.")
+else:
+    output_df = d_filtered.head(max_show).reset_index(drop=True)
+    output_df.index = output_df.index + 1
+    output_df.index.name = "Rank"
 
-output_df = output_df.rename(columns={
-    'name1': 'Facility Name', 
-    'phone': 'Phone',
-    'orig_row': 'Source Row(s)'
-})
+    output_df = output_df.rename(columns={
+        'name1': 'Facility Name', 
+        'phone': 'Phone',
+        'orig_row': 'Source'
+    })
 
-st.dataframe(
-    output_df[['Facility Name', 'Location', 'Phone', 'Propensity Score', 'Source Row(s)']], 
-    use_container_width=True,
-    height=550
-)
+    st.dataframe(
+        output_df[['Facility Name', 'Location', 'Phone', 'Propensity Score', 'Source']], 
+        use_container_width=True,
+        height=550,
+        column_config={
+            "Source": st.column_config.TextColumn("Source Row(s)", width="small"),
+            "Propensity Score": st.column_config.ProgressColumn(
+                "Propensity",
+                help="Relative Score (0-100)",
+                format="%d",
+                min_value=0,
+                max_value=100,
+            ),
+        }
+    )
 
 st.download_button("📥 Download Scored List (CSV)", d_filtered.to_csv(index=False).encode('utf-8'), "Scored_Prospects.csv")
