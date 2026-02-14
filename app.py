@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import gspread
+from collections import defaultdict
 from google.oauth2.service_account import Credentials
 
 # --- 1. CONFIG & STYLING ---
@@ -15,8 +16,43 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+# --- 2. WEIGHTED SCORING ENGINE ---
+# This dictionary defines the "Value" of each tag.
+WEIGHT_MAP = defaultdict(lambda: 0.1) # Default weight for unknown/noise codes is 0.1
+
+# PLATINUM: Core Infrastructure & High Acuity (5.0 pts)
+for code in ['HI', 'PSYH', 'RES', 'RL', 'RS', 'DT', 'ADTX', 'ODTX', 'BDTX', 'CDTX', 'MDTX', 'SUMH', 'MH', 'SA', 'OTP']:
+    WEIGHT_MAP[code] = 5.0
+
+# GOLD: Business Drivers & Clinical Depth (3.0 pts)
+for code in ['PVTP', 'UB', 'MM', 'VTRL', 'BERI', 'GH', 'CO', 'VET', 'ADM', 'PW', 'SE', 'LABT', 'MSRV']:
+    WEIGHT_MAP[code] = 3.0
+
+# SILVER: Standard Therapies & Outpatient (1.0 pt)
+for code in ['OP', 'IOP', 'PH', 'CBT', 'DBT', 'MI', 'ANG', 'REL', 'TRC', 'SAE', 'TCC', 'CM', 'SS', 'TA']:
+    WEIGHT_MAP[code] = 1.0
+
+# NOISE: Languages, Policies, Gov Ownership (0.0 - 0.1 pts)
+# (Explicitly setting low value tags to ensure they don't inflate scores)
+for code in ['SPS', 'AH', 'SMOP', 'SMON', 'SMPD', 'VAPP', 'VAPN', 'VPPD', 'LCCG', 'STG', 'FED', 'VAMC']:
+    WEIGHT_MAP[code] = 0.05
+
+def calculate_weighted_score(series):
+    # Splits the string by '*' and sums the weights
+    codes = "*".join(series.astype(str)).split('*')
+    unique_codes = set([c.strip() for c in codes if c.strip()])
+    
+    score = 0.0
+    for c in unique_codes:
+        # Check for Language codes (F followed by numbers) to treat as noise
+        if c.startswith('F') and c[1:].isdigit():
+            score += 0.01
+        else:
+            score += WEIGHT_MAP[c]
+            
+    return score
+
 def merge_tags(series):
-    # Combine tags, split by asterisk, and return unique set
     all_tags = "*".join(series.astype(str)).split('*')
     unique_tags = sorted(list(set([t.strip() for t in all_tags if t.strip()])))
     return " * ".join(unique_tags)
@@ -34,39 +70,39 @@ def load_data():
         df = pd.DataFrame(sheet.get_all_records())
         df['orig_row'] = df.index + 2
         
-        # --- SAFE DEDUPLICATION ---
-        # Fill NA to prevent "nan" in Location
+        # --- PRE-PROCESSING ---
         df['city'] = df['city'].fillna('')
         df['state'] = df['state'].fillna('')
-        
         df['city_clean'] = df['city'].astype(str).str.title()
         df['state_clean'] = df['state'].astype(str).str.upper()
         
+        # --- ROLLUP & SCORING ---
         rollup = df.groupby(['name1', 'city_clean', 'state_clean']).agg({
             'service_code_info': merge_tags,
             'phone': 'first',
             'orig_row': merge_rows
         }).reset_index()
         
-        # Create Clean Location
         rollup['Location'] = rollup.apply(
             lambda x: f"{x['city_clean']}, {x['state_clean']}" if x['city_clean'] else x['state_clean'], 
             axis=1
         )
         
-        rollup['raw_comp'] = rollup['service_code_info'].str.split('*').str.len()
+        # Apply Weighted Scoring
+        rollup['weighted_score'] = rollup['service_code_info'].apply(lambda x: calculate_weighted_score(pd.Series([x])))
         
-        u_max = rollup['raw_comp'].max() if not rollup.empty else 1
-        rollup['Propensity Score'] = ((rollup['raw_comp'] / u_max) * 100).round(0).astype(int)
+        # Normalize to 0-100 based on the highest scoring facility
+        u_max = rollup['weighted_score'].max() if not rollup.empty else 1
+        rollup['Propensity Score'] = ((rollup['weighted_score'] / u_max) * 100).round(0).astype(int)
         
         return rollup, u_max, len(df)
     except Exception as e:
         st.error(f"❌ Connection Failed: {e}"); st.stop()
 
 # Load Data
-d, u_max, total_raw = load_data()
+d, u_max_score, total_raw = load_data()
 
-# --- 2. TUNER RIBBON ---
+# --- 3. TUNER RIBBON ---
 st.sidebar.title("🎯 Prospect Filters")
 
 st.sidebar.subheader("Care Type(s) To Include")
@@ -79,11 +115,13 @@ st.sidebar.divider()
 st.sidebar.subheader("Propensity Threshold")
 min_propensity = st.sidebar.slider("Min. Propensity Score", 0, 100, 40, step=1)
 
-# Sidebar Legend
+# Updated Sidebar Legend
 st.sidebar.info(f"""
-**Score Drivers (Max: {u_max} Tags):**
-* **100:** Merged SUD/MH + Full Continuum.
-* **80+:** High-density specialty programs.
+**Weighted Logic:**
+* **Platinum (5pts):** Inpatient, Residential, Detox, Dual-Diag.
+* **Gold (3pts):** Private Owner, MAT, Vets, Co-occurring.
+* **Silver (1pt):** Standard Therapy, Outpatient.
+* **Noise (0pt):** Languages, Policies.
 """)
 
 st.sidebar.divider()
@@ -93,7 +131,7 @@ exclude_gov = st.sidebar.toggle("Exclude Govt/VAMC", value=True)
 only_private = st.sidebar.toggle("Only Private For-Profit")
 max_show = st.sidebar.number_input("Max Rows Shown", value=1000)
 
-# --- 3. FILTER ENGINE ---
+# --- 4. FILTER ENGINE ---
 d_filtered = d.copy()
 
 patterns = []
@@ -105,6 +143,9 @@ if patterns:
     combined_pattern = "|".join(patterns)
     d_filtered = d_filtered[d_filtered['service_code_info'].str.contains(combined_pattern, case=False, na=False)]
 else:
+    # If explicit filters are empty, we might still want to see data if weighting is doing the heavy lifting?
+    # User said "outpatient only should be excluded anyway".
+    # Sticking to the filter pattern ensures we honor that exclusion.
     d_filtered = pd.DataFrame(columns=d.columns)
 
 d_filtered = d_filtered[d_filtered['Propensity Score'] >= min_propensity]
@@ -114,18 +155,18 @@ if exclude_gov:
 if only_private:
     d_filtered = d_filtered[d_filtered['service_code_info'].str.contains('PVTP', case=False, na=False)]
 
-# Sort: Score -> Location -> Name (Keeps regions together in ties)
+# Sort by Score (High to Low), then Location (A-Z)
 d_filtered = d_filtered.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
 
-# --- 4. MAIN OUTPUT PANE ---
-st.title("📊 Scored Prospects")
+# --- 5. MAIN OUTPUT PANE ---
+st.title("📊 Scored Prospects (Weighted)")
 
 # Metrics
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Universe Total", f"{total_raw:,}")
 m2.metric("Qualifying Facilities", f"{len(d_filtered):,}")
 m3.metric("Avg Propensity", f"{int(d_filtered['Propensity Score'].mean()) if not d_filtered.empty else 0}%")
-m4.metric("Score Ceiling", f"{u_max} Tags")
+m4.metric("Max Weighted Score", f"{int(u_max_score)}")
 
 # Filters
 c_search, c_state = st.columns(2)
@@ -157,7 +198,7 @@ else:
             "Source": st.column_config.TextColumn("Source Row(s)", width="small"),
             "Propensity Score": st.column_config.ProgressColumn(
                 "Propensity",
-                help="Relative Score (0-100)",
+                help="Weighted Score (0-100)",
                 format="%d",
                 min_value=0,
                 max_value=100,
