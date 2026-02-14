@@ -23,13 +23,16 @@ def load_data():
     client = gspread.authorize(creds)
     
     # CONNECT TO SHEET
-    # Use the EXACT name of the Google Sheet you created in Drive
     SHEET_NAME = "SAMHSA_Master_Data"
     
     try:
         sheet = client.open(SHEET_NAME).sheet1
         data = sheet.get_all_records()
         df = pd.DataFrame(data)
+        
+        # Add Sheet Row Number (Index + 2 to match Google Sheets UI)
+        df.index = df.index + 2
+        df.index.name = "Master Row #"
         
         # Fast Cleaning
         df.columns = df.columns.str.strip()
@@ -124,7 +127,7 @@ st.dataframe(active_df[['name1', 'Tier', 'Score', 'Tags', 'state', 'phone']].hea
 
 # Export
 output_cols = ['name1', 'Tier', 'Score', 'Tags', 'phone', 'city', 'state', 'street1', 'zip']
-csv = active_df[output_cols].to_csv(index=False).encode('utf-8')
+csv = active_df[output_cols].to_csv(index=True).encode('utf-8')
 
 st.download_button(
     label="📥 Download Scored List",
