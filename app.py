@@ -25,16 +25,16 @@ def load_data():
         df.index = df.index + 2
         df.index.name = "Master Row #"
         
-        # Calculate raw maturity based on asterisk split
+        # Calculate Propensity relative to the best facility in the data
         df['service_code_info'] = df['service_code_info'].fillna('').astype(str)
         df['raw_comp'] = df['service_code_info'].str.split('*').str.len().fillna(0)
         
-        # Determine the Universe Maximum for the 0-100 Propensity Scale
+        # Find the absolute maximum complexity in the 20,519 universe
         universe_max = df['raw_comp'].max() if not df.empty else 1
         df['Propensity Score'] = ((df['raw_comp'] / universe_max) * 100).round(1)
         
-        # Combine City and State for cleaner UI
-        df['Location'] = df['city'].astype(str) + ", " + df['state'].astype(str)
+        # Combine City and State for clean reading
+        df['Location'] = df['city'].astype(str).str.title() + ", " + df['state'].astype(str).str.upper()
         
         return df, universe_max
     except Exception as e:
@@ -43,7 +43,8 @@ def load_data():
 # --- 2. TUNER RIBBON ---
 st.sidebar.title("🎯 Prospect Filters")
 
-st.sidebar.subheader("Target Service Tiers (OR)")
+st.sidebar.subheader("Service Type Filters")
+# Simple checkboxes for inclusion
 inc_res = st.sidebar.checkbox("Residential", value=True)
 inc_dtx = st.sidebar.checkbox("Detox (DT)")
 inc_hosp = st.sidebar.checkbox("Hospital / Inpatient")
@@ -51,26 +52,26 @@ inc_hosp = st.sidebar.checkbox("Hospital / Inpatient")
 st.sidebar.divider()
 
 st.sidebar.subheader("Propensity Threshold")
-# Now using the 0-100 scale for the slider
+# Minimum score requirement (0-100 scale)
 min_propensity = st.sidebar.slider(
-    "Minimum Propensity Score", 
+    "Min. Propensity Score", 
     0.0, 100.0, 40.0,
-    help="100 = Best possible prospect in the 20,519 record universe."
+    help="100 = Best possible prospect available in the data."
 )
 
 st.sidebar.divider()
 
-st.sidebar.subheader("Global Settings")
+st.sidebar.subheader("Settings")
 exclude_gov = st.sidebar.toggle("Exclude Govt/VAMC", value=True)
 only_private = st.sidebar.toggle("Only Private For-Profit")
-max_show = st.sidebar.number_input("Max Records", value=1000)
+max_show = st.sidebar.number_input("Max Rows to Display", value=1000)
 
 # --- 3. FILTER ENGINE ---
 raw_df, u_max = load_data()
 total_raw = len(raw_df)
 d = raw_df.copy()
 
-# Apply OR logic
+# Apply Service Inclusions
 patterns = []
 if inc_res: patterns.append("RES|RL|RS")
 if inc_dtx: patterns.append("DT")
@@ -80,53 +81,52 @@ if patterns:
     combined_pattern = "|".join(patterns)
     d = d[d['service_code_info'].str.contains(combined_pattern, case=False, na=False)]
 else:
-    d = pd.DataFrame(columns=d.columns)
+    d = pd.DataFrame(columns=d.columns) # Show nothing if no categories selected
 
-# Apply Thresholds and Settings
+# Apply Quality & Preference Filters
 d = d[d['Propensity Score'] >= min_propensity]
 if exclude_gov:
     d = d[~d['service_code_info'].str.contains('STG|FED|VAMC', case=False, na=False)]
 if only_private:
     d = d[d['service_code_info'].str.contains('PVTP', case=False, na=False)]
 
-# Sort by Propensity Score
+# Rank by score (best first)
 d = d.sort_values(by=['Propensity Score', 'name1'], ascending=[False, True])
 
 # --- 4. MAIN OUTPUT PANE ---
 st.title("📊 Scored Prospects")
 
-# Reconciliation Metrics
+# Key Metrics for the Junior Resource
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Universe Total", f"{total_raw:,}")
+m1.metric("Total Universe", f"{total_raw:,}")
 m2.metric("Qualifying", f"{len(d):,}")
 m3.metric("Avg Propensity", f"{round(d['Propensity Score'].mean(), 1) if not d.empty else 0}%")
-m4.metric("Universe Max Score", f"{u_max} Codes")
+m4.metric("Propensity Floor", f"{min_propensity}%")
 
-# Search & State
+# Search and State Filtering
 c_search, c_state = st.columns(2)
 search = c_search.text_input("🔍 Search Facility Name").lower()
-# Using combined 'Location' or raw 'state' for filter? Let's stick to State for the dropdown to avoid clutter
-states = c_state.multiselect("📍 Filter State", options=sorted(raw_df['state'].unique()))
+states = c_state.multiselect("📍 Filter by State", options=sorted(raw_df['state'].unique()))
 
 if search: d = d[d['name1'].str.lower().str.contains(search)]
 if states: d = d[d['state'].isin(states)]
 
-# Clean Table Display
+# Table Cleanup
 output_df = d.head(max_show).reset_index()
 output_df.index = range(1, len(output_df) + 1)
 output_df.index.name = "Rank"
 
-# Renaming for UI
+# Rename for clear business context
 output_df = output_df.rename(columns={
     'name1': 'Facility Name',
     'phone': 'Phone'
 })
 
-# Displayed Columns in requested order
+# Displayed order: Facility -> Location -> Phone -> Score
 st.dataframe(
     output_df[['Facility Name', 'Location', 'Phone', 'Propensity Score', 'Master Row #']], 
     use_container_width=True,
     height=550
 )
 
-st.download_button("📥 Download Scored List", d.to_csv(index=True).encode('utf-8'), "Scored_Prospects.csv")
+st.download_button("📥 Download Scored List (CSV)", d.to_csv(index=True).encode('utf-8'), "Scored_Prospects.csv")
