@@ -9,11 +9,9 @@ st.set_page_config(page_title="A/S RR Tuner", layout="wide")
 st.markdown("""
     <style>
     .block-container {padding-top: 1rem; padding-bottom: 0rem;}
-    /* Tighten Sidebar */
-    [data-testid="stSidebar"] {width: 300px !important;}
+    [data-testid="stSidebar"] {width: 280px !important;}
     div[data-testid="stMetric"] {padding: 0px 0px 5px 0px;}
-    .stSlider {margin-top: -15px; padding-bottom: 10px;}
-    .stNumberInput {margin-top: -15px;}
+    .stCheckbox {margin-bottom: -10px;}
     </style>
     """, unsafe_allow_html=True)
 
@@ -27,100 +25,98 @@ def load_data():
         df = pd.DataFrame(sheet.get_all_records())
         df.index = df.index + 2
         df.index.name = "Master Row #"
-        # Count total codes for complexity scoring
-        df['service_count'] = df['service_code_info'].str.split(',').str.len().fillna(0)
+        # Pre-calculate complexity (how many unique services they offer)
+        df['complexity'] = df['service_code_info'].str.split(',').str.len().fillna(0)
         df['service_code_info'] = df['service_code_info'].fillna('').astype(str)
         return df
     except Exception as e:
         st.error(f"❌ Connection Failed: {e}"); st.stop()
 
-# --- 2. SIDEBAR TUNER (COMPACT) ---
-st.sidebar.title("🎛️ Tuner Ribbon")
+# --- 2. THE SIMPLIFIED TUNER RIBBON ---
+st.sidebar.title("🎯 Prospect Filters")
 
-with st.sidebar.expander("⭐ Core Service Weights", expanded=True):
-    s_hi = st.slider("Hospital Inpatient", 0, 100, 50)
-    s_psy = st.slider("Psych Unit", 0, 100, 40)
-    s_res = st.slider("Residential", 0, 100, 30)
-    s_detox = st.slider("Detox (DT)", 0, 100, 25)
+# Section 1: Must-Have Services
+st.sidebar.subheader("Required Services")
+req_hosp = st.sidebar.checkbox("Hospital / Inpatient")
+req_detox = st.sidebar.checkbox("Detox (DT)")
+req_res = st.sidebar.checkbox("Residential", value=True)
 
-with st.sidebar.expander("📊 Complexity & Bonus"):
-    s_comp = st.slider("Complexity Bonus (>25 codes)", 0, 50, 20)
-    s_std = st.slider("Standard Bonus (10-25 codes)", 0, 50, 10)
-    s_combo = st.slider("Res + Detox Combo", 0, 50, 15)
-    s_priv = st.slider("Private For-Profit", 0, 50, 10)
+st.sidebar.divider()
 
-with st.sidebar.expander("🚫 Penalties & Tiers"):
-    s_gov = st.slider("Govt/VAMC Penalty", -50, 0, -15)
-    t1_cut = st.number_input("Tier 1 Threshold", value=95)
-    max_records = st.number_input("Max Prospects Shown", value=1000)
+# Section 2: The "Intuitive" Quality Slider
+st.sidebar.subheader("Quality Filter")
+# Moving this right makes the list SMALLER (stricter)
+min_complexity = st.sidebar.slider(
+    "Min. Services Offered", 
+    min_value=1, max_value=40, value=5,
+    help="Slide right to filter for more 'complex/mature' facilities. This will decrease the number of results."
+)
 
-# --- 3. SCORING ENGINE ---
+st.sidebar.divider()
+
+# Section 3: Firm Preferences
+st.sidebar.subheader("Preferences")
+only_private = st.sidebar.toggle("Only Private For-Profit")
+exclude_gov = st.sidebar.toggle("Exclude Govt/VAMC", value=True)
+max_show = st.sidebar.number_input("Max Rows to Show", value=1000)
+
+# --- 3. THE INTUITIVE FILTER ENGINE ---
 raw_df = load_data()
 total_raw = len(raw_df)
 
-def score_row(row):
-    codes = row['service_code_info']
-    count = row['service_count']
-    score = 0; tags = []
-    
-    # Core Service Logic
-    if 'HI' in codes: score += s_hi; tags.append("HI")
-    if 'PSY' in codes: score += s_psy; tags.append("PSY")
-    if any(c in codes for c in ['RES', 'RL', 'RS']): score += s_res; tags.append("RES")
-    if 'DT' in codes: score += s_detox; tags.append("DETOX")
-    
-    # Complexity Logic (The Tie-Breaker)
-    if count > 25: score += s_comp; tags.append("COMPLEX")
-    elif count >= 10: score += s_std; tags.append("STANDARD")
-    
-    # Combo & Ownership Logic
-    if 'DT' in codes and any(c in codes for c in ['RES', 'RL', 'RS']):
-        score += s_combo; tags.append("INTEGRATED")
-    if 'PVTP' in codes: score += s_priv; tags.append("PRIVATE")
-    if any(c in codes for c in ['STG', 'FED', 'VAMC']): score += s_gov; tags.append("GOV")
-    
-    return score, ", ".join(tags)
+# Start with the Master List
+d = raw_df.copy()
 
-overnight_codes = ['HI', 'PSY', 'GH', 'RES', 'RL', 'RS']
-active_df = raw_df[raw_df['service_code_info'].apply(lambda x: any(c in x for c in overnight_codes))].copy()
+# Apply Hard Requirements (The "Checkboxes")
+if req_hosp:
+    d = d[d['service_code_info'].str.contains('HI|PSY', na=False)]
+if req_detox:
+    d = d[d['service_code_info'].str.contains('DT', na=False)]
+if req_res:
+    d = d[d['service_code_info'].str.contains('RES|RL|RS', na=False)]
 
-# Run the scoring
-scoring_results = active_df.apply(score_row, axis=1)
-active_df['Score'] = [x[0] for x in scoring_results]
-active_df['Tags'] = [x[1] for x in scoring_results]
-active_df['Tier'] = active_df['Score'].apply(lambda s: "Tier 1" if s >= t1_cut else "Tier 2")
+# Apply Quality Filter (The "Slider")
+d = d[d['complexity'] >= min_complexity]
 
-# Sort by Score first, then name
-active_df = active_df.sort_values(by=['Score', 'name1'], ascending=[False, True])
+# Apply Preferences
+if only_private:
+    d = d[d['service_code_info'].str.contains('PVTP', na=False)]
+if exclude_gov:
+    d = d[~d['service_code_info'].str.contains('STG|FED|VAMC', na=False)]
+
+# Sorting: Rank by complexity (biggest campuses first)
+d = d.sort_values(by=['complexity', 'name1'], ascending=[False, True])
 
 # --- 4. MAIN OUTPUT PANE ---
 st.title("📊 Scored Prospects")
 
-# Reconciliation Row (Comma Formatted)
+# Reconciliation Row
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Master", f"{total_raw:,}")
-m2.metric("Qualifying", f"{len(active_df):,}")
-m3.metric("Tier 1", f"{len(active_df[active_df['Tier']=='Tier 1']):,}")
-m4.metric("Avg Score", round(active_df['Score'].mean(), 1))
+m1.metric("Master Records", f"{total_raw:,}")
+m2.metric("Qualifying", f"{len(d):,}")
+m3.metric("Avg Complexity", round(d['complexity'].mean(), 1))
+m4.metric("Strictness Level", f"{min_complexity}/40")
 
 # Filters
 c_search, c_state = st.columns(2)
 search = c_search.text_input("🔍 Search Facility Name").lower()
-states = c_state.multiselect("📍 Filter by State", options=sorted(active_df['state'].unique()))
+states = c_state.multiselect("📍 Filter State", options=sorted(d['state'].unique()))
 
-display_df = active_df.copy()
-if search: display_df = display_df[display_df['name1'].str.lower().str.contains(search)]
-if states: display_df = display_df[display_df['state'].isin(states)]
+if search: d = d[d['name1'].str.lower().str.contains(search)]
+if states: d = d[d['state'].isin(states)]
 
-# Table
-output_df = display_df.head(max_records).reset_index()
+# Final Table
+output_df = d.head(max_show).reset_index()
 output_df.index = range(1, len(output_df) + 1)
 output_df.index.name = "Rank"
 
+# Rename 'complexity' to 'Score' for the UI
+output_df = output_df.rename(columns={'complexity': 'Service Count'})
+
 st.dataframe(
-    output_df[['name1', 'Tier', 'Score', 'Tags', 'state', 'Master Row #']], 
+    output_df[['name1', 'Service Count', 'state', 'phone', 'Master Row #']], 
     use_container_width=True,
-    height=550
+    height=500
 )
 
-st.download_button("📥 Download Scored CSV", display_df.to_csv(index=True).encode('utf-8'), "Scored_Prospects.csv")
+st.download_button("📥 Download This Scored View", d.to_csv(index=True).encode('utf-8'), "Scored_Prospects.csv")
