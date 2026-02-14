@@ -28,13 +28,9 @@ def load_data():
         df.index = df.index + 2
         df.index.name = "Master Row #"
         
-        # CLEANING: Ensure column exists and is string-based
-        if 'service_code_info' in df.columns:
-            df['service_code_info'] = df['service_code_info'].fillna('').astype(str)
-            df['complexity'] = df['service_code_info'].str.split(',').str.len()
-        else:
-            st.error("Column 'service_code_info' not found in your sheet!")
-            st.stop()
+        # FIX: The data uses '*' as a separator, not ','
+        df['service_code_info'] = df['service_code_info'].fillna('').astype(str)
+        df['complexity'] = df['service_code_info'].str.split('*').str.len()
             
         return df
     except Exception as e:
@@ -53,7 +49,7 @@ selected_services = st.sidebar.multiselect(
 st.sidebar.divider()
 
 st.sidebar.subheader("Quality Filter")
-min_complexity = st.sidebar.slider("Min. Services Offered", 1, 40, 5)
+min_complexity = st.sidebar.slider("Min. Services Offered", 1, 60, 10)
 
 st.sidebar.divider()
 
@@ -62,7 +58,7 @@ exclude_gov = st.sidebar.toggle("Exclude Govt/VAMC", value=True)
 only_private = st.sidebar.toggle("Only Private For-Profit")
 max_show = st.sidebar.number_input("Max Rows Shown", value=1000)
 
-# --- 3. FILTER ENGINE (Case-Insensitive & OR Logic) ---
+# --- 3. FILTER ENGINE ---
 raw_df = load_data()
 total_raw = len(raw_df)
 d = raw_df.copy()
@@ -70,15 +66,15 @@ d = raw_df.copy()
 # Step 1: Filter by Service Type (OR Logic)
 if selected_services:
     patterns = []
+    # Updated patterns to be more flexible for space-separated codes
     if "Hospital Inpatient" in selected_services: patterns.append("HI|PSY")
     if "Detox" in selected_services: patterns.append("DT")
     if "Residential" in selected_services: patterns.append("RES|RL|RS")
     
     combined_pattern = "|".join(patterns)
-    # Added case=False to handle "res", "RES", or "Res"
     d = d[d['service_code_info'].str.contains(combined_pattern, case=False, na=False)]
 
-# Step 2: Quality Filter
+# Step 2: Quality Filter (Now counting asterisks correctly)
 d = d[d['complexity'] >= min_complexity]
 
 # Step 3: Preferences
@@ -98,14 +94,7 @@ m1, m2, m3, m4 = st.columns(4)
 m1.metric("Master Records", f"{total_raw:,}")
 m2.metric("Qualifying", f"{len(d):,}")
 m3.metric("Avg Complexity", round(d['complexity'].mean(), 1) if not d.empty else 0)
-m4.metric("Strictness", f"{min_complexity}/40")
-
-# DATA HEALTH CHECK (Hidden by default, expand if list is 0)
-if len(d) == 0:
-    with st.expander("⚠️ Troubleshooting: Why is the list empty?", expanded=True):
-        st.write("Current Filter Pattern:", combined_pattern if selected_services else "None")
-        st.write("Sample Service Codes from your Sheet:")
-        st.write(raw_df['service_code_info'].head(10).tolist())
+m4.metric("Strictness", f"{min_complexity} Codes")
 
 # Search & State
 c_search, c_state = st.columns(2)
@@ -124,7 +113,7 @@ output_df = output_df.rename(columns={'complexity': 'Service Count'})
 st.dataframe(
     output_df[['name1', 'Service Count', 'state', 'phone', 'Master Row #']], 
     use_container_width=True,
-    height=450
+    height=500
 )
 
 st.download_button("📥 Download Scored CSV", d.to_csv(index=True).encode('utf-8'), "Scored_Prospects.csv")
