@@ -6,14 +6,14 @@ from google.oauth2.service_account import Credentials
 # --- 1. CONFIG & STYLING ---
 st.set_page_config(page_title="A/S RR Tuner", layout="wide")
 
-# Custom CSS to tighten vertical spacing
+# Corrected CSS block to fix the TypeError
 st.markdown("""
     <style>
     .block-container {padding-top: 1rem; padding-bottom: 0rem;}
-    div[data-testid="stMetric"] {padding: 0px 0px 10px 0px;}
-    div[data-testid="stExpander"] {margin-top: -20px;}
+    div[data-testid="stMetric"] {padding: 0px 0px 5px 0px;}
+    div[data-testid="stExpander"] {margin-top: -15px;}
     </style>
-    """, unsafe_allow_value=True)
+    """, unsafe_allow_html=True)
 
 @st.cache_data(ttl=3600)
 def load_data():
@@ -43,8 +43,8 @@ s_gov = st.sidebar.slider("Govt Penalty", -50, 0, -15)
 st.sidebar.divider()
 st.sidebar.subheader("Output Constraints")
 max_records = st.sidebar.slider("Max Prospects to Display", 100, 5000, 1000)
-t1_cut = st.sidebar.number_input("Tier 1 Cutoff (Score >=)", value=95)
-t2_cut = st.sidebar.number_input("Tier 2 Cutoff (Score >=)", value=75)
+t1_cut = st.sidebar.number_input("Tier 1 Threshold (Score >=)", value=95)
+t2_cut = st.sidebar.number_input("Tier 2 Threshold (Score >=)", value=75)
 
 # --- 3. SCORING ENGINE ---
 raw_df = load_data()
@@ -72,15 +72,15 @@ active_df = active_df.sort_values(by=['Score', 'name1'], ascending=[False, True]
 # --- 4. MAIN OUTPUT PANE ---
 st.title("📊 Scored Prospects")
 
-# Reconciliation & Stats Row (Tightened)
+# Reconciliation Row (with comma formatting)
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Master Records", f"{total_raw:,}")
-m2.metric("Qualifying", f"{total_qualifying:,}")
-m3.metric("Current Set", f"{len(active_df):,}")
+m2.metric("Excluded", f"{total_raw - total_qualifying:,}")
+m3.metric("Qualifying", f"{total_qualifying:,}")
 m4.metric("Tier 1", f"{len(active_df[active_df['Tier']=='Tier 1']):,}")
 m5.metric("Avg Score", round(active_df['Score'].mean(), 1))
 
-# Search & Filters (Side-by-side)
+# Search & Filters
 c_search, c_state = st.columns(2)
 search = c_search.text_input("🔍 Search Facility Name").lower()
 states = c_state.multiselect("📍 Filter by State", options=sorted(active_df['state'].unique()))
@@ -89,15 +89,15 @@ display_df = active_df.copy()
 if search: display_df = display_df[display_df['name1'].str.lower().str.contains(search)]
 if states: display_df = display_df[display_df['state'].isin(states)]
 
-# Table with Rank
+# Table with Rank Numbering
 output_df = display_df.head(max_records).reset_index()
 output_df.index = range(1, len(output_df) + 1)
-output_df.index.name = "Rank"
+output_df.index.name = "#"
 
 st.dataframe(
     output_df[['name1', 'Tier', 'Score', 'Tags', 'state', 'Master Row #']], 
     use_container_width=True,
-    height=500  # Fixed height helps avoid whole-page scrolling
+    height=450  # Further reduced height to pull everything above the fold
 )
 
-st.download_button("📥 Download Scored CSV", display_df.to_csv(index=True).encode('utf-8'), "Scored_Prospects.csv")
+st.download_button("📥 Download This Scored View", display_df.to_csv(index=True).encode('utf-8'), "Scored_Prospects.csv")
