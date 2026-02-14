@@ -50,7 +50,7 @@ def load_data():
         df['city_clean'] = df['city'].astype(str).str.title()
         df['state_clean'] = df['state'].astype(str).str.upper()
         
-        # Rollup (Step 2 of Waterfall)
+        # Rollup
         rollup = df.groupby(['name1', 'city_clean', 'state_clean']).agg({
             'service_code_info': merge_tags,
             'phone': 'first',
@@ -62,7 +62,7 @@ def load_data():
             axis=1
         )
         
-        # Pre-calculate counts
+        # Pre-calculate category counts for speed
         rollup['n_infra'] = rollup['service_code_info'].apply(lambda x: count_category(x, INFRA_CODES))
         rollup['n_clinical'] = rollup['service_code_info'].apply(lambda x: count_category(x, CLINICAL_CODES))
         rollup['n_private'] = rollup['service_code_info'].apply(lambda x: count_category(x, PRIVATE_CODES))
@@ -105,11 +105,13 @@ max_show = st.sidebar.number_input("Max Rows", value=1000)
 
 # --- 4. SCORING & WATERFALL CALCULATION ---
 
-# Step 1: Universe (Done in load_data) -> total_raw
-# Step 2: Unique Locations (Done in load_data) -> len(d)
+# Step 1: Universe
+# (total_raw calculated in load_data)
+
+# Step 2: Unique Locations
 count_unique = len(d)
 
-# Step 3: Service Match
+# Step 3: Care Type Fit
 d['Raw_Score'] = (
     (d['n_infra'] * w_infra) + 
     (d['n_clinical'] * w_clin) + 
@@ -130,16 +132,15 @@ if patterns:
     combined_pattern = "|".join(patterns)
     d_services = d_services[d_services['service_code_info'].str.contains(combined_pattern, case=False, na=False)]
 else:
-    # Pass through if no filters selected (or empty if strict logic preferred, but pass-through is safer for UX)
     pass 
 
 count_services = len(d_services)
 
-# Step 4: Score Match
+# Step 4: Score Fit
 d_scored = d_services[d_services['Propensity Score'] >= min_propensity]
 count_scored = len(d_scored)
 
-# Step 5: Final Qualifying (Gov Filter)
+# Step 5: Final List
 d_final = d_scored.copy()
 if exclude_gov:
     d_final = d_final[~d_final['service_code_info'].str.contains('STG|FED|VAMC', case=False, na=False)]
@@ -156,7 +157,7 @@ st.title("📊 Scored Prospects")
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("1. Universe", f"{total_raw:,}", help="Raw rows in spreadsheet")
 c2.metric("2. Unique Locs", f"{count_unique:,}", delta=f"{count_unique - total_raw:,}", help="After merging SUD/MH duplicates")
-c3.metric("3. Service Fit", f"{count_services:,}", delta=f"{count_services - count_unique:,}", help="Matches selected Care Types")
+c3.metric("3. Care Type Fit", f"{count_services:,}", delta=f"{count_services - count_unique:,}", help="Matches selected Care Types")
 c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"{count_scored - count_services:,}", help="Meets Min. Propensity Score")
 c5.metric("5. Final List", f"{count_final:,}", delta=f"{count_final - count_scored:,}", help="After removing Govt/VAMC")
 
