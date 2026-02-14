@@ -50,7 +50,7 @@ def load_data():
         df['city_clean'] = df['city'].astype(str).str.title()
         df['state_clean'] = df['state'].astype(str).str.upper()
         
-        # Rollup
+        # Rollup (Step 2 of Waterfall)
         rollup = df.groupby(['name1', 'city_clean', 'state_clean']).agg({
             'service_code_info': merge_tags,
             'phone': 'first',
@@ -62,7 +62,7 @@ def load_data():
             axis=1
         )
         
-        # Pre-calculate category counts for speed
+        # Pre-calculate counts
         rollup['n_infra'] = rollup['service_code_info'].apply(lambda x: count_category(x, INFRA_CODES))
         rollup['n_clinical'] = rollup['service_code_info'].apply(lambda x: count_category(x, CLINICAL_CODES))
         rollup['n_private'] = rollup['service_code_info'].apply(lambda x: count_category(x, PRIVATE_CODES))
@@ -85,13 +85,13 @@ with st.sidebar.expander("1. Filter Care Types (Include)", expanded=True):
 st.sidebar.divider()
 
 st.sidebar.subheader("2. Define 'Propensity'")
-st.sidebar.caption("Adjust the sliders to change how facilities are ranked:")
+st.sidebar.caption("Adjust sliders to rank facilities:")
 
 # Factor Sliders
-w_infra = st.sidebar.slider("Infrastructure Weight", 1, 10, 5, help="Value of 'Big Iron' licenses (Inpatient, Res, Detox)")
-w_priv = st.sidebar.slider("Private Ownership Bonus", 0, 20, 10, help="Bonus for Private For-Profit status")
-w_clin = st.sidebar.slider("Clinical Depth Weight", 1, 10, 3, help="Value of Medical capabilities (MAT, Dual-Diag)")
-w_std = st.sidebar.slider("Standard Services Weight", 0, 5, 1, help="Value of generic Outpatient/Therapy codes")
+w_infra = st.sidebar.slider("Infrastructure Weight", 1, 10, 5, help="Value of 'Big Iron' licenses")
+w_priv = st.sidebar.slider("Private Ownership Bonus", 0, 20, 10, help="Bonus for Private For-Profit")
+w_clin = st.sidebar.slider("Clinical Depth Weight", 1, 10, 3, help="Value of Medical capabilities")
+w_std = st.sidebar.slider("Standard Services Weight", 0, 5, 1, help="Value of generic Outpatient")
 
 st.sidebar.divider()
 
@@ -103,23 +103,24 @@ st.sidebar.divider()
 exclude_gov = st.sidebar.toggle("Exclude Govt/VAMC", value=True)
 max_show = st.sidebar.number_input("Max Rows", value=1000)
 
-# --- 4. SCORING ENGINE ---
-# Calculate Score based on current slider positions
+# --- 4. SCORING & WATERFALL CALCULATION ---
+
+# Step 1: Universe (Done in load_data) -> total_raw
+# Step 2: Unique Locations (Done in load_data) -> len(d)
+count_unique = len(d)
+
+# Step 3: Service Match
 d['Raw_Score'] = (
     (d['n_infra'] * w_infra) + 
     (d['n_clinical'] * w_clin) + 
     (d['n_private'] * w_priv) + 
     (d['n_standard'] * w_std)
 )
-
-# Normalize
 current_max = d['Raw_Score'].max()
 if current_max == 0: current_max = 1
 d['Propensity Score'] = ((d['Raw_Score'] / current_max) * 100).round(0).astype(int)
 
-# --- 5. FILTERING ---
-d_filtered = d.copy()
-
+d_services = d.copy()
 patterns = []
 if inc_res: patterns.append("RES|RL|RS")
 if inc_dtx: patterns.append("DT")
@@ -127,39 +128,51 @@ if inc_hosp: patterns.append("HI|PSY")
 
 if patterns:
     combined_pattern = "|".join(patterns)
-    d_filtered = d_filtered[d_filtered['service_code_info'].str.contains(combined_pattern, case=False, na=False)]
+    d_services = d_services[d_services['service_code_info'].str.contains(combined_pattern, case=False, na=False)]
 else:
+    # Pass through if no filters selected (or empty if strict logic preferred, but pass-through is safer for UX)
     pass 
 
-d_filtered = d_filtered[d_filtered['Propensity Score'] >= min_propensity]
+count_services = len(d_services)
 
+# Step 4: Score Match
+d_scored = d_services[d_services['Propensity Score'] >= min_propensity]
+count_scored = len(d_scored)
+
+# Step 5: Final Qualifying (Gov Filter)
+d_final = d_scored.copy()
 if exclude_gov:
-    d_filtered = d_filtered[~d_filtered['service_code_info'].str.contains('STG|FED|VAMC', case=False, na=False)]
+    d_final = d_final[~d_final['service_code_info'].str.contains('STG|FED|VAMC', case=False, na=False)]
 
-d_filtered = d_filtered.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
+count_final = len(d_final)
+
+# Sort Final List
+d_final = d_final.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
 
 # --- 6. OUTPUT ---
 st.title("📊 Scored Prospects")
 
-# Clean 3-Column Layout
-m1, m2, m3 = st.columns(3)
-m1.metric("Universe Total", f"{total_raw:,}")
-m2.metric("Qualifying Facilities", f"{len(d_filtered):,}")
-m3.metric("Avg Propensity", f"{int(d_filtered['Propensity Score'].mean()) if not d_filtered.empty else 0}%")
+# WATERFALL METRICS
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("1. Universe", f"{total_raw:,}", help="Raw rows in spreadsheet")
+c2.metric("2. Unique Locs", f"{count_unique:,}", delta=f"{count_unique - total_raw:,}", help="After merging SUD/MH duplicates")
+c3.metric("3. Service Fit", f"{count_services:,}", delta=f"{count_services - count_unique:,}", help="Matches selected Care Types")
+c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"{count_scored - count_services:,}", help="Meets Min. Propensity Score")
+c5.metric("5. Final List", f"{count_final:,}", delta=f"{count_final - count_scored:,}", help="After removing Govt/VAMC")
 
 # Search
 c_search, c_state = st.columns(2)
 search = c_search.text_input("🔍 Search Facility Name").lower()
 states = c_state.multiselect("📍 Filter by State", options=sorted(d['state_clean'].unique()))
 
-if search: d_filtered = d_filtered[d_filtered['name1'].str.lower().str.contains(search)]
-if states: d_filtered = d_filtered[d_filtered['state_clean'].isin(states)]
+if search: d_final = d_final[d_final['name1'].str.lower().str.contains(search)]
+if states: d_final = d_final[d_final['state_clean'].isin(states)]
 
 # Table
-if d_filtered.empty:
-    st.warning("⚠️ No prospects found. Try adjusting your sliders or filters.")
+if d_final.empty:
+    st.warning("⚠️ No prospects found. Try loosening your filters.")
 else:
-    output_df = d_filtered.head(max_show).reset_index(drop=True)
+    output_df = d_final.head(max_show).reset_index(drop=True)
     output_df.index = output_df.index + 1
     output_df.index.name = "Rank"
 
@@ -184,4 +197,4 @@ else:
         }
     )
 
-st.download_button("📥 Download Scored List (CSV)", d_filtered.to_csv(index=False).encode('utf-8'), "Scored_Prospects.csv")
+st.download_button("📥 Download Scored List (CSV)", d_final.to_csv(index=False).encode('utf-8'), "Scored_Prospects.csv")
