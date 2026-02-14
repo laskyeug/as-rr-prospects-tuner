@@ -16,7 +16,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 def merge_tags(series):
-    # Combine tags from different licenses, split by *, and return a unique set
+    # Combine tags, split by asterisk, and return unique set
     all_tags = "*".join(series.astype(str)).split('*')
     unique_tags = sorted(list(set([t.strip() for t in all_tags if t.strip()])))
     return " * ".join(unique_tags)
@@ -31,7 +31,6 @@ def load_data():
         df = pd.DataFrame(sheet.get_all_records())
         
         # --- SMART DEDUPLICATION ---
-        # We group by Name AND City AND State to ensure multi-city chains aren't accidentally merged.
         df['city_clean'] = df['city'].astype(str).str.title()
         df['state_clean'] = df['state'].astype(str).str.upper()
         
@@ -44,9 +43,9 @@ def load_data():
         rollup['Location'] = rollup['city_clean'] + ", " + rollup['state_clean']
         rollup['raw_comp'] = rollup['service_code_info'].str.split('*').str.len()
         
-        # Calculate Propensity on Rolled-up Data
+        # Calculate Propensity as an INTEGER
         u_max = rollup['raw_comp'].max()
-        rollup['Propensity Score'] = ((rollup['raw_comp'] / u_max) * 100).round(1)
+        rollup['Propensity Score'] = ((rollup['raw_comp'] / u_max) * 100).round(0).astype(int)
         
         return rollup, u_max, len(df)
     except Exception as e:
@@ -63,7 +62,12 @@ inc_hosp = st.sidebar.checkbox("Hospital / Inpatient")
 st.sidebar.divider()
 
 st.sidebar.subheader("Propensity Threshold")
-min_propensity = st.sidebar.slider("Min. Propensity Score", 0.0, 100.0, 40.0)
+# Slider now snaps to whole integers
+min_propensity = st.sidebar.slider(
+    "Min. Propensity Score", 
+    0, 100, 40, 
+    step=1
+)
 
 st.sidebar.divider()
 
@@ -104,18 +108,17 @@ st.title("📊 Scored Prospects")
 with st.expander("ℹ️ Propensity Score Parameter Key"):
     st.markdown(f"""
     **Propensity Logic:** Scores are relative to the maximum of **{u_max}** unique service tags.
-    * **100.0:** Absolute Top Tier. Represents facilities with fully integrated SUD & MH capabilities.
-    * **90.0+:** Highly Institutional. Typically multi-program campuses.
-    * **80.0+:** Comprehensive. Professional standard with wide specialized service range.
-    * **Tie-Breaking:** When scores are identical, records are ranked alphabetically by name.
+    * **100:** Absolute Top Tier. Facilities with fully integrated SUD & MH capabilities.
+    * **90+:** Highly Institutional campuses.
+    * **80+:** Comprehensive professional standard.
     """)
 
 # Metrics
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Raw Universe", f"{total_raw:,}")
 m2.metric("Qualifying Facilities", f"{len(d_filtered):,}")
-m3.metric("Avg Propensity", f"{round(d_filtered['Propensity Score'].mean(), 1) if not d_filtered.empty else 0}%")
-m4.metric("Universe Max", f"{u_max} Tags")
+m3.metric("Avg Propensity", f"{int(d_filtered['Propensity Score'].mean()) if not d_filtered.empty else 0}%")
+m4.metric("Propensity Floor", f"{min_propensity}%")
 
 # Filters
 c_search, c_state = st.columns(2)
