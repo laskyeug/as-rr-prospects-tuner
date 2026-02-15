@@ -14,22 +14,25 @@ st.markdown("""
     .stCheckbox {margin-bottom: -15px;}
     .stSlider {padding-top: 10px; padding-bottom: 20px;}
     
-    /* CLEAN BUTTON STYLING */
+    /* CUSTOM BUTTON POSITIONING */
     div[data-testid="column"] button {
         width: 100%;
-        margin-top: -18px; /* Pulls button up to sit tight under the number (like a delta) */
+        /* The specific pixel adjustments requested: */
+        transform: translate(-50px, -20px); 
+        
         border: none;
-        border-radius: 8px; /* Soft rounded corners */
+        border-radius: 8px;
         background-color: #262730; 
         color: #ff4b4b; 
         font-weight: 600;
         font-size: 14px;
         display: flex;
-        justify-content: center; /* Centers the text/icon horizontally */
+        justify-content: center;
         align-items: center;
         transition: all 0.2s;
         padding: 0.25rem 0.5rem;
         line-height: 1.2;
+        margin-top: -15px; /* Base pull-up, transform adds to this */
     }
     div[data-testid="column"] button:hover {
         background-color: #ff4b4b;
@@ -40,7 +43,6 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- 2. SESSION STATE MANAGEMENT ---
-# Set the default to 100 as requested
 if 'max_show' not in st.session_state:
     st.session_state.max_show = 100
 
@@ -123,7 +125,7 @@ st.sidebar.divider()
 st.sidebar.subheader("3. Cutoff & Limits")
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
 
-# Input bound to session state, with min_value=1 to prevent 0
+# Input bound to session state, with min_value=1
 st.sidebar.number_input("Download Size (Rows)", key="max_show", min_value=1, step=1)
 
 st.sidebar.divider()
