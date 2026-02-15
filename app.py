@@ -26,6 +26,8 @@ h1 {margin-bottom: 0 !important; padding-bottom: 0 !important; font-size: 1.8rem
 hr {margin: 0.3rem 0 !important;}
 .stDivider {margin: 0.2rem 0 !important;}
 div[data-testid="stTextInput"], div[data-testid="stMultiSelect"] {margin-bottom: -0.5rem !important;}
+/* Align tie button with metric row */
+div[data-testid="stButton"] button {font-size: 0.8rem !important;}
 .legend-text {font-size: 0.78rem; color: #808495; line-height: 1.4; margin-top: -0.3rem;}
 .legend-text b {color: #b0b4c0;}
 </style>
@@ -813,14 +815,13 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- Funnel Metrics ---
-# Shows pipeline: Raw → Dedup → Setting → Score → Qualified (capability + govt combined)
-c1, c2, c3, c4, c5, c6 = st.columns(6)
-c1.metric("1. Raw Records", f"{total_raw:,}")
-c2.metric("2. Locations", f"{count_unique:,}", delta=f"−{total_raw - count_unique:,}", delta_color="off")
-c3.metric("3. Setting Fit", f"{count_setting:,}", delta=f"−{count_unique - count_setting:,}", delta_color="off")
-c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"−{count_setting - count_scored:,}", delta_color="off")
-c5.metric("5. Qualified", f"{count_final:,}", delta=f"−{count_scored - count_final:,}", delta_color="off")
+# --- Funnel Metrics (tighter spacing, ties+button on same row) ---
+c1, c2, c3, c4, c5, c6, c7 = st.columns([1, 1, 1, 1, 1, 0.6, 0.8])
+c1.metric("Raw Records", f"{total_raw:,}")
+c2.metric("Locations", f"{count_unique:,}", delta=f"−{total_raw - count_unique:,}", delta_color="off")
+c3.metric("Setting Fit", f"{count_setting:,}", delta=f"−{count_unique - count_setting:,}", delta_color="off")
+c4.metric("Score Fit", f"{count_scored:,}", delta=f"−{count_setting - count_scored:,}", delta_color="off")
+c5.metric("Qualified", f"{count_final:,}", delta=f"−{count_scored - count_final:,}", delta_color="off")
 
 st.markdown('<hr style="margin:0.2rem 0;">', unsafe_allow_html=True)
 
@@ -841,7 +842,7 @@ count_filtered = len(d_final)
 
 # Show filtered count when search/state narrows results
 if search or states:
-    c6.metric("6. Filtered", f"{count_filtered:,}")
+    c6.metric("Filtered", f"{count_filtered:,}")
 
 # --- Apply display limit AFTER search/state ---
 current_limit = int(st.session_state.max_show)
@@ -854,19 +855,16 @@ if count_filtered > current_limit:
 else:
     display_df = d_final.copy()
 
-# Ties — button centered under the ties counter
+# Ties — count in c6, button in c7 (same row)
 if count_ties > 0:
     if not (search or states):
-        with c6:
-            st.metric("6. Ties", f"{count_ties:,}")
-            if st.button("➕ Include Ties"):
-                st.session_state.pending_tie_add = count_ties
-                st.rerun()
-    else:
-        # c6 already used for Filtered — put tie button below search bar
-        if st.button(f"➕ Include {count_ties} Ties at Score {int(cutoff)}"):
+        c6.metric("Ties", f"{count_ties:,}")
+    with c7:
+        st.markdown('<div style="margin-top: 1.1rem;">', unsafe_allow_html=True)
+        if st.button("➕ Include Ties"):
             st.session_state.pending_tie_add = count_ties
             st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
 
 # --- Gap analysis ---
 display_df = display_df.copy()
