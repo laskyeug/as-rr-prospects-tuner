@@ -13,8 +13,11 @@ st.markdown("""
     div[data-testid="stMetric"] {padding: 0px 0px 5px 0px;}
     .stCheckbox {margin-bottom: -15px;}
     .stSlider {padding-top: 10px; padding-bottom: 20px;}
-    /* Make the button fill the column width for better aesthetics */
-    div.stButton > button {width: 100%;}
+    /* Button Styling to fit Metric Column */
+    div.stButton > button {
+        width: 100%;
+        margin-top: -15px; /* Pull button up closer to the number */
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -102,9 +105,9 @@ st.sidebar.divider()
 st.sidebar.subheader("3. Cutoff & Limits")
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
 
-# Max Rows now controlled by Session State
+# "Download Size" controlled by Session State
 max_show = st.sidebar.number_input(
-    "Max Rows to Display", 
+    "Download Size (Rows)", 
     value=st.session_state.max_show,
     key="max_show_input",
     on_change=lambda: st.session_state.update({"max_show": st.session_state.max_show_input})
@@ -190,11 +193,13 @@ c3.metric("3. Care Type Fit", f"{count_services:,}", delta=f"-{count_unique - co
 c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"-{count_services - count_scored:,}", delta_color="off")
 c5.metric("5. Total Qualified", f"{count_final:,}", delta=f"-{count_scored - count_final:,}", delta_color="off")
 
-# 6th Metric: DYNAMIC
+# 6th Metric: DYNAMIC ACTION
 backlog = max(0, count_final - len(display_df))
 if has_hidden_ties:
-    c6.metric("6. Hidden Ties", f"{count_ties:,}", delta="Below Cutoff", delta_color="inverse")
-    if c6.button(f"➕ Add {count_ties}"):
+    # Shows just the number, no confusing delta
+    c6.metric("6. Hidden Ties", f"{count_ties:,}")
+    # Button takes the place of the delta/subtitle
+    if c6.button("➕ Adjust Download Size"):
         st.session_state.max_show += count_ties
         st.rerun()
 else:
