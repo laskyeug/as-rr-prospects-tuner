@@ -637,10 +637,17 @@ st.sidebar.divider()
 # --- Score Thresholds ---
 with st.sidebar.expander("🎚️ Minimum Scores", expanded=False):
     min_total = st.slider("Total Score", 0, 100, 67, 1)
-    min_loc = st.slider("Level of Care", 0, 30, 15, 1)
-    min_clinical = st.slider("Clinical Complexity", 0, 30, 10, 1)
-    min_risk = st.slider("Sentinel Event Risk", 0, 25, 15, 1)
-    min_quality = st.slider("Institutional Quality", 0, 15, 6, 1)
+    st.caption("Pillar minimums (0 = no filter, 10 = require max)")
+    min_loc_pct = st.slider("Level of Care", 0, 10, 5, 1)
+    min_clinical_pct = st.slider("Clinical Complexity", 0, 10, 3, 1)
+    min_risk_pct = st.slider("Sentinel Event Risk", 0, 10, 6, 1)
+    min_quality_pct = st.slider("Institutional Quality", 0, 10, 4, 1)
+
+    # Convert 0-10 scale to actual pillar thresholds
+    min_loc = int(min_loc_pct * PILLAR_CAPS['loc'] / 10)
+    min_clinical = int(min_clinical_pct * PILLAR_CAPS['clinical'] / 10)
+    min_risk = int(min_risk_pct * PILLAR_CAPS['risk'] / 10)
+    min_quality = int(min_quality_pct * PILLAR_CAPS['quality'] / 10)
 
 st.sidebar.divider()
 
@@ -824,7 +831,7 @@ c2.metric("Locations", f"{count_unique:,}", delta=-(total_raw - count_unique), d
 c3.metric("Setting Fit", f"{count_setting:,}", delta=-(count_unique - count_setting), delta_color="normal",
           help="Filtered to selected care settings (sidebar). Outpatient-only facilities excluded.")
 c4.metric("Score Fit", f"{count_scored:,}", delta=-(count_setting - count_scored), delta_color="normal",
-          help="Filtered by minimum score thresholds (Total, LOC, Clinical, Risk, Quality sliders).")
+          help="Filtered by minimum score thresholds (Total score + per-pillar 0–10 selectivity sliders).")
 c5.metric("Qualified", f"{count_final:,}", delta=-(count_scored - count_final), delta_color="normal",
           help="After applying treatment requirements (COD, MAT, SMI), accreditation filter, and government exclusion.")
 
