@@ -12,9 +12,9 @@ st.markdown("""
     .block-container {padding-top: 1.5rem; padding-bottom: 0rem;}
     [data-testid="stSidebar"] {width: 310px !important;}
     
-    /* SIDEBAR LIFT & VERTICAL SPACING */
+    /* SIDEBAR LIFT & SPACING */
     [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
-        gap: 0.6rem !important;
+        gap: 0.5rem !important;
         padding-top: 0rem !important;
     }
     [data-testid="stSidebarNav"] {display: none;}
@@ -24,16 +24,25 @@ st.markdown("""
         font-size: 1.7rem !important;
     }
     [data-testid="stSidebar"] h3 {
-        margin-top: 0.4rem !important;
-        margin-bottom: 0.2rem !important;
+        margin-top: 0.3rem !important;
+        margin-bottom: 0.1rem !important;
         font-size: 1.05rem !important;
         font-weight: 600;
     }
     [data-testid="stSidebar"] hr {margin: 0.4rem 0px !important;}
     [data-testid="stSidebar"] .stCheckbox {margin-bottom: -8px !important;}
-    [data-testid="stSidebar"] .stSlider {padding-bottom: 8px !important;}
+    
+    /* SLIDER CUES (Less/More) */
+    .slider-container {
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+        color: #808495;
+        margin-top: -15px;
+        padding-bottom: 10px;
+    }
 
-    /* CLEAN BUTTON STYLING (Column 6) */
+    /* CLEAN BUTTON STYLING */
     div[data-testid="column"] button {
         width: 90%;
         margin-left: 5%;
@@ -43,7 +52,6 @@ st.markdown("""
         background-color: #262730; 
         color: #ff4b4b; 
         font-weight: 600;
-        font-size: 13px;
         transition: all 0.2s;
         padding: 4px 0px;
     }
@@ -112,10 +120,29 @@ with st.sidebar.expander("Care Types (Include)", expanded=True):
     inc_hosp = st.checkbox("Hospital / Inpatient")
 
 st.sidebar.subheader("Propensity Settings")
-w_infra = st.sidebar.slider("Infrastructure Weight", 1, 10, 5)
-w_priv = st.sidebar.slider("Private Ownership Bonus", 0, 20, 10)
-w_clin = st.sidebar.slider("Clinical Depth Weight", 1, 10, 3)
-w_std = st.sidebar.slider("Standard Services Weight", 0, 5, 1)
+
+# Slider 1: Infrastructure
+w_infra = st.sidebar.slider("Infrastructure Breadth", 1, 10, 5)
+st.sidebar.markdown('<div class="slider-container"><span>Less (-)</span><span>More (+)</span></div>', unsafe_allow_html=True)
+
+# Slider 2: Clinical
+w_clin = st.sidebar.slider("Clinical Depth", 1, 10, 3)
+st.sidebar.markdown('<div class="slider-container"><span>Less (-)</span><span>More (+)</span></div>', unsafe_allow_html=True)
+
+# Slider 3: Standard
+w_std = st.sidebar.slider("Standard Services", 0, 5, 1)
+st.sidebar.markdown('<div class="slider-container"><span>Less (-)</span><span>More (+)</span></div>', unsafe_allow_html=True)
+
+st.sidebar.divider()
+
+# Replacement for Private Slider: Ownership Logic
+st.sidebar.caption("Ownership Logic")
+priv_mode = st.sidebar.radio(
+    "Ownership Mode", 
+    ["Neutral", "Prioritize Private", "Private Only"], 
+    horizontal=False,
+    label_visibility="collapsed"
+)
 
 st.sidebar.divider()
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
@@ -123,20 +150,28 @@ st.sidebar.number_input("Download Size (Rows)", key="max_show", min_value=1, ste
 exclude_gov = st.sidebar.toggle("Exclude Govt/VAMC", value=True)
 
 # --- 5. SCORING ---
-d['Raw_Score'] = (d['n_infra'] * w_infra) + (d['n_clinical'] * w_clin) + (d['n_private'] * w_priv) + (d['n_standard'] * w_std)
+# Private Weight adjustment based on UX selection
+p_bonus = 20 if priv_mode == "Prioritize Private" else 0
+
+d['Raw_Score'] = (d['n_infra'] * w_infra) + (d['n_clinical'] * w_clin) + (d['n_private'] * p_bonus) + (d['n_standard'] * w_std)
 current_max = d['Raw_Score'].max() if d['Raw_Score'].max() > 0 else 1
 d['Propensity Score'] = ((d['Raw_Score'] / current_max) * 100).round(0).astype(int)
 
-# --- 6. WATERFALL FILTERING ---
+# --- 6. FILTERING ENGINE ---
 count_unique = len(d)
 patterns = []
 if inc_res: patterns.append("RES|RL|RS")
 if inc_dtx: patterns.append("DT")
 if inc_hosp: patterns.append("HI|PSY")
 
-d_services = d[d['service_code_info'].str.contains("|".join(patterns), case=False, na=False)] if patterns else d
-count_services = len(d_services)
-d_scored = d_services[d_services['Propensity Score'] >= min_propensity]
+d_work = d[d['service_code_info'].str.contains("|".join(patterns), case=False, na=False)] if patterns else d
+
+# Apply Ownership Filter if "Private Only" selected
+if priv_mode == "Private Only":
+    d_work = d_work[d_work['n_private'] > 0]
+
+count_services = len(d_work)
+d_scored = d_work[d_work['Propensity Score'] >= min_propensity]
 count_scored = len(d_scored)
 d_final = d_scored[~d_scored['service_code_info'].str.contains('STG|FED|VAMC', case=False, na=False)] if exclude_gov else d_scored
 count_final = len(d_final)
@@ -179,32 +214,20 @@ states = c_state.multiselect("📍 State", options=sorted(d['state_clean'].uniqu
 if search: display_df = display_df[display_df['name1'].str.lower().str.contains(search)]
 if states: display_df = display_df[display_df['state_clean'].isin(states)]
 
-# Rank Column Logic
 display_df = display_df.reset_index(drop=True)
 display_df.insert(0, 'Rank', display_df.index + 1)
 
-# Final Table Rendering with Column Width Constraints
 st.dataframe(
     display_df[['Rank', 'name1', 'Location', 'phone', 'Propensity Score', 'orig_row']].rename(
-        columns={
-            'name1': 'Facility Name', 
-            'phone': 'Phone', 
-            'orig_row': 'Source Row(s)'
-        }
+        columns={'name1': 'Facility Name', 'phone': 'Phone', 'orig_row': 'Source Row(s)'}
     ), 
     use_container_width=True, 
     height=550, 
     hide_index=True, 
     column_config={
-        "Rank": st.column_config.NumberColumn("Rank", width=40), # Aggressively narrowed
-        "Propensity Score": st.column_config.ProgressColumn(
-            "Propensity", 
-            format="%d", 
-            min_value=0, 
-            max_value=100,
-            width=80 # Aggressively narrowed
-        ),
-        "Source Row(s)": st.column_config.TextColumn("Source Row(s)", width=200) # Widened
+        "Rank": st.column_config.NumberColumn("Rank", width=40),
+        "Propensity Score": st.column_config.ProgressColumn("Propensity", format="%d", min_value=0, max_value=100, width=80),
+        "Source Row(s)": st.column_config.TextColumn("Source Row(s)", width=200)
     }
 )
 
