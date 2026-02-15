@@ -3,7 +3,7 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 
-# --- 1. CONFIG & STYLING (Final Vertical Optimization) ---
+# --- 1. CONFIG & STYLING (Vertical Lift + Restored Deltas) ---
 st.set_page_config(page_title="A/S RR Tuner", layout="wide")
 
 st.markdown("""
@@ -12,16 +12,14 @@ st.markdown("""
     .block-container {padding-top: 1.5rem; padding-bottom: 0rem;}
     [data-testid="stSidebar"] {width: 310px !important;}
     
-    /* SIDEBAR LIFT: Shift the entire block up */
+    /* SIDEBAR LIFT */
     [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
         gap: 0.5rem !important;
-        padding-top: 0rem !important; /* Removes top padding to shift block up */
+        padding-top: 0rem !important;
     }
-    [data-testid="stSidebarNav"] {
-        display: none; /* Removes unnecessary nav space if present */
-    }
+    [data-testid="stSidebarNav"] {display: none;}
     [data-testid="stSidebar"] h1 {
-        margin-top: -30px !important; /* Aggressive lift for the title */
+        margin-top: -30px !important;
         margin-bottom: 0.5rem !important;
         font-size: 1.7rem !important;
     }
@@ -30,16 +28,9 @@ st.markdown("""
         margin-bottom: 0.1rem !important;
         font-size: 1.05rem !important;
     }
-    /* Tighten Dividers to save vertical real estate */
-    [data-testid="stSidebar"] hr {
-        margin: 0.4rem 0px !important;
-    }
-    [data-testid="stSidebar"] .stCheckbox {
-        margin-bottom: -8px !important;
-    }
-    [data-testid="stSidebar"] .stSlider {
-        padding-bottom: 8px !important;
-    }
+    [data-testid="stSidebar"] hr {margin: 0.4rem 0px !important;}
+    [data-testid="stSidebar"] .stCheckbox {margin-bottom: -8px !important;}
+    [data-testid="stSidebar"] .stSlider {padding-bottom: 8px !important;}
 
     /* METRIC BUTTON STYLING */
     div[data-testid="column"] button {
@@ -111,7 +102,7 @@ def load_data():
 
 d, total_raw = load_data()
 
-# --- 4. SCORING CONTROL BOARD (Sidebar) ---
+# --- 4. SCORING CONTROL BOARD ---
 st.sidebar.title("🎛️ Scoring Controls")
 
 with st.sidebar.expander("Care Types (Include)", expanded=True):
@@ -136,8 +127,9 @@ d['Raw_Score'] = (d['n_infra'] * w_infra) + (d['n_clinical'] * w_clin) + (d['n_p
 current_max = d['Raw_Score'].max() if d['Raw_Score'].max() > 0 else 1
 d['Propensity Score'] = ((d['Raw_Score'] / current_max) * 100).round(0).astype(int)
 
-# --- 6. FILTERING ---
+# --- 6. FILTERING ENGINE ---
 count_unique = len(d)
+
 patterns = []
 if inc_res: patterns.append("RES|RL|RS")
 if inc_dtx: patterns.append("DT")
@@ -145,10 +137,13 @@ if inc_hosp: patterns.append("HI|PSY")
 
 d_services = d[d['service_code_info'].str.contains("|".join(patterns), case=False, na=False)] if patterns else d
 count_services = len(d_services)
+
 d_scored = d_services[d_services['Propensity Score'] >= min_propensity]
 count_scored = len(d_scored)
+
 d_final = d_scored[~d_scored['service_code_info'].str.contains('STG|FED|VAMC', case=False, na=False)] if exclude_gov else d_scored
 count_final = len(d_final)
+
 d_final = d_final.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
 
 # --- 7. TIE DETECTION ---
@@ -164,13 +159,13 @@ else:
 # --- 8. MAIN VIEW ---
 st.title("📊 Scored Prospects")
 
-# Metrics Waterfall
+# WATERFALL METRICS WITH DELTAS RESTORED
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("1. Universe", f"{total_raw:,}")
-c2.metric("2. Unique Locs", f"{count_unique:,}")
-c3.metric("3. Care Type Fit", f"{count_services:,}")
-c4.metric("4. Score Fit", f"{count_scored:,}")
-c5.metric("5. Total Qualified", f"{count_final:,}")
+c2.metric("2. Unique Locs", f"{count_unique:,}", delta=f"-{total_raw - count_unique:,}", delta_color="off")
+c3.metric("3. Care Type Fit", f"{count_services:,}", delta=f"-{count_unique - count_services:,}", delta_color="off")
+c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"-{count_services - count_scored:,}", delta_color="off")
+c5.metric("5. Total Qualified", f"{count_final:,}", delta=f"-{count_scored - count_final:,}", delta_color="off")
 
 if count_ties > 0:
     c6.metric("6. Hidden Ties", f"{count_ties:,}")
