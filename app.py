@@ -13,7 +13,7 @@ st.set_page_config(page_title="Rounding Solution Targets", layout="wide")
 
 st.markdown("""
 <style>
-.block-container {padding-top: 0.8rem; padding-bottom: 0rem; max-width: 100%;}
+.block-container {padding-top: 1.1rem; padding-bottom: 0rem; max-width: 100%;}
 [data-testid="stSidebar"] {width: 340px !important;}
 [data-testid="stSidebarNav"] {display: none;}
 [data-testid="stSidebar"] h1 {margin-top: -30px !important; margin-bottom: 0.5rem !important; font-size: 1.7rem !important;}
@@ -761,7 +761,7 @@ st.dataframe(
         'Pillars': 'L·C·R·Q',
     }),
     use_container_width=True,
-    height=580,
+    height=420,
     hide_index=True,
     column_config={
         "Rank": st.column_config.NumberColumn("Rank", width=55),
