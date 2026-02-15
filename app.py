@@ -6,7 +6,7 @@ import re
 from google.oauth2.service_account import Credentials
 
 # --- 1. CONFIG & STYLING ---
-st.set_page_config(page_title="Rounding Solution Propensity Engine", layout="wide")
+st.set_page_config(page_title="Rounding Solution Targets", layout="wide")
 
 st.markdown("""
     <style>
@@ -61,59 +61,68 @@ def count_codes(codes_str, code_list):
     codes_upper = str(codes_str).upper()
     return sum(1 for code in code_list if code in codes_upper)
 
-def calculate_loc_score(row):
+def calculate_loc_score(row, weights=None):
     """Calculate Level of Care score (0-40 points)"""
+    if weights is None:
+        weights = {'psych': 40, 'hosp': 35, 'res_dtx': 30, 'res': 25}
+    
     codes = str(row['service_code_info']).upper()
     
     # Check for psychiatric hospital
     if 'PSYH' in codes:
-        return 40
+        return weights['psych']
     
     # Check for hospital inpatient (need word boundary to avoid HID, HIT, etc.)
     # Service codes are separated by spaces or asterisks like "SA * HI * OP"
     if re.search(r'\bHI\b', codes):
-        return 35
+        return weights['hosp']
     
     # Check for residential
     has_residential = has_code(codes, LOC_INDICATORS['RESIDENTIAL'])
     has_detox = has_code(codes, LOC_INDICATORS['DETOX'])
     
     if has_residential:
-        return 30 if has_detox else 25
+        return weights['res_dtx'] if has_detox else weights['res']
     elif has_detox:
         return 20
     
     return 0  # Outpatient only
 
-def calculate_sophistication_score(row):
+def calculate_sophistication_score(row, weights=None):
     """Calculate Clinical Sophistication score (0-30 points)"""
+    if weights is None:
+        weights = {'mat': 4, 'psych': 3, 'med': 2}
+    
     codes = str(row['service_code_info']).upper()
     
     mat_count = count_codes(codes, CLINICAL_SOPHISTICATION['MAT_MEDICATIONS'])
     psych_count = count_codes(codes, CLINICAL_SOPHISTICATION['PSYCH_SERVICES'])
     medical_count = count_codes(codes, CLINICAL_SOPHISTICATION['MEDICAL_SERVICES'])
     
-    score = (mat_count * 4) + (psych_count * 3) + (medical_count * 2)
+    score = (mat_count * weights['mat']) + (psych_count * weights['psych']) + (medical_count * weights['med'])
     
     return min(30, score)  # Cap at 30
 
-def calculate_acuity_score(row):
+def calculate_acuity_score(row, weights=None):
     """Calculate Risk/Acuity score (0-30 points)"""
+    if weights is None:
+        weights = {'cooccur': 10, 'smi': 8, 'detox': 7, 'crisis': 5}
+    
     codes = str(row['service_code_info']).upper()
     
     score = 0
     
     if has_code(codes, ACUITY_INDICATORS['COOCCURRING']):
-        score += 10
+        score += weights['cooccur']
     
     if has_code(codes, ACUITY_INDICATORS['SMI_PROGRAMS']):
-        score += 8
+        score += weights['smi']
     
     if has_code(codes, ACUITY_INDICATORS['DETOX']):
-        score += 7
+        score += weights['detox']
     
     if has_code(codes, ACUITY_INDICATORS['CRISIS_SERVICES']):
-        score += 5
+        score += weights['crisis']
     
     return min(30, score)  # Cap at 30
 
@@ -178,7 +187,7 @@ def load_data():
         df['is_govt'] = df['service_code_info'].apply(lambda x: has_code(x, GOVT_CODES))
         
         # Calculate total propensity score
-        df['propensity_score'] = (
+        df['score'] = (
             df['loc_score'] + 
             df['sophistication_score'] + 
             df['acuity_score']
@@ -199,14 +208,14 @@ def load_data():
         )
         
         # Roll up by location (keep highest scoring record for each name+city+state)
-        rollup = df.sort_values('propensity_score', ascending=False).groupby(
+        rollup = df.sort_values('score', ascending=False).groupby(
             ['name1', 'city_clean', 'state_clean'], 
             as_index=False
         ).agg({
             'service_code_info': merge_tags,
             'phone': 'first',
             'orig_row': lambda x: ", ".join(x.astype(str)),
-            'propensity_score': 'max',
+            'score': 'max',
             'loc_score': 'max',
             'sophistication_score': 'max',
             'acuity_score': 'max',
@@ -237,26 +246,9 @@ count_unique = len(d)
 
 # --- 6. SIDEBAR CONTROL BOARD ---
 
-st.sidebar.title("🎯 Propensity Engine")
+st.sidebar.title("🎯 Target Filters")
 
-st.sidebar.markdown("### Scoring Model")
-st.sidebar.markdown("""
-**Level of Care** (0-40 pts)
-- Psych Hospital: 40
-- Hospital Inpatient: 35  
-- Residential+Detox: 30
-- Residential: 25
-
-**Clinical Sophistication** (0-30 pts)
-- MAT meds, psych services, medical
-
-**Risk/Acuity** (0-30 pts)
-- Co-occurring, SMI, detox, crisis
-""")
-
-st.sidebar.divider()
-
-with st.sidebar.expander("🏥 Setting Filters", expanded=True):
+with st.sidebar.expander("🏥 Care Settings", expanded=True):
     inc_psych_hosp = st.checkbox("Psychiatric Hospitals", value=True)
     inc_hosp_inpt = st.checkbox("Hospital Inpatient", value=True)
     inc_residential = st.checkbox("Residential (24hr)", value=True)
@@ -264,31 +256,45 @@ with st.sidebar.expander("🏥 Setting Filters", expanded=True):
 
 st.sidebar.divider()
 
-with st.sidebar.expander("🎚️ Score Thresholds", expanded=True):
-    min_loc = st.slider("Minimum Level of Care Score", 0, 40, 25, 5)
-    st.markdown('<div class="slider-label-row"><span>Any</span><span>Psych Hospital Only</span></div>', unsafe_allow_html=True)
-    
-    min_clinical = st.slider("Minimum Clinical Score", 0, 30, 0, 5)
-    st.markdown('<div class="slider-label-row"><span>Any</span><span>Maximum</span></div>', unsafe_allow_html=True)
-    
-    min_acuity = st.slider("Minimum Acuity Score", 0, 30, 0, 5)
-    st.markdown('<div class="slider-label-row"><span>Any</span><span>Maximum</span></div>', unsafe_allow_html=True)
+with st.sidebar.expander("🎚️ Minimum Scores", expanded=False):
+    min_loc = st.slider("Level of Care", 0, 40, 25, 5)
+    min_clinical = st.slider("Clinical Capabilities", 0, 30, 0, 5)
+    min_acuity = st.slider("Risk/Acuity", 0, 30, 0, 5)
+    min_total_score = st.slider("Total Score", 0, 100, 50, 5)
 
 st.sidebar.divider()
 
-with st.sidebar.expander("⚙️ Additional Filters", expanded=False):
-    require_cooccurring = st.checkbox("Require Co-occurring Treatment", value=False)
-    require_mat = st.checkbox("Require MAT Capability", value=False)
-    require_smi = st.checkbox("Require SMI Programs", value=False)
+with st.sidebar.expander("⚙️ Requirements", expanded=False):
+    require_cooccurring = st.checkbox("Co-occurring Treatment", value=False)
+    require_mat = st.checkbox("MAT Capability", value=False)
+    require_smi = st.checkbox("SMI Programs", value=False)
 
 st.sidebar.divider()
 
-exclude_govt = st.sidebar.toggle("Exclude Explicit Government", value=True)
+exclude_govt = st.sidebar.toggle("Exclude Government Facilities", value=True)
 
 st.sidebar.divider()
 
-min_total_score = st.sidebar.slider("Minimum Total Propensity Score", 0, 100, 50, 5)
 st.sidebar.number_input("Display Row Count", key="max_show", min_value=1, step=1)
+
+# Advanced Settings (collapsed)
+with st.sidebar.expander("⚙️ Advanced - Adjust Scoring Weights", expanded=False):
+    st.markdown("**Level of Care Weights**")
+    w_psych = st.number_input("Psychiatric Hospital", 0, 100, 40, 5, key="w_psych")
+    w_hosp = st.number_input("Hospital Inpatient", 0, 100, 35, 5, key="w_hosp")
+    w_res_dtx = st.number_input("Residential + Detox", 0, 100, 30, 5, key="w_res_dtx")
+    w_res = st.number_input("Residential", 0, 100, 25, 5, key="w_res")
+    
+    st.markdown("**Clinical Sophistication Weights**")
+    w_mat = st.number_input("MAT Medications (each)", 0, 10, 4, 1, key="w_mat")
+    w_psych_svc = st.number_input("Psych Services (each)", 0, 10, 3, 1, key="w_psych_svc")
+    w_med = st.number_input("Medical Services (each)", 0, 10, 2, 1, key="w_med")
+    
+    st.markdown("**Risk/Acuity Weights**")
+    w_cooccur = st.number_input("Co-occurring", 0, 30, 10, 1, key="w_cooccur")
+    w_smi = st.number_input("SMI Programs", 0, 30, 8, 1, key="w_smi")
+    w_detox = st.number_input("Detox Capability", 0, 30, 7, 1, key="w_detox")
+    w_crisis = st.number_input("Crisis Services", 0, 30, 5, 1, key="w_crisis")
 
 # --- 7. FILTERING ENGINE ---
 
@@ -322,7 +328,7 @@ d_work = d_work[
     (d_work['loc_score'] >= min_loc) &
     (d_work['sophistication_score'] >= min_clinical) &
     (d_work['acuity_score'] >= min_acuity) &
-    (d_work['propensity_score'] >= min_total_score)
+    (d_work['score'] >= min_total_score)
 ]
 
 count_scored = len(d_work)
@@ -344,7 +350,7 @@ if exclude_govt:
 count_final = len(d_work)
 
 # Sort by propensity score
-d_final = d_work.sort_values(by=['propensity_score', 'name1'], ascending=[False, True]).copy()
+d_final = d_work.sort_values(by=['score', 'name1'], ascending=[False, True]).copy()
 
 # --- 8. TIE DETECTION ---
 
@@ -352,19 +358,19 @@ current_limit = int(st.session_state.max_show)
 count_ties = 0
 
 if count_final > current_limit:
-    cutoff_score = d_final.iloc[current_limit - 1]['propensity_score']
-    count_ties = len(d_final.iloc[current_limit:][d_final.iloc[current_limit:]['propensity_score'] == cutoff_score])
+    cutoff_score = d_final.iloc[current_limit - 1]['score']
+    count_ties = len(d_final.iloc[current_limit:][d_final.iloc[current_limit:]['score'] == cutoff_score])
     display_df = d_final.head(current_limit).copy()
 else:
     display_df = d_final.copy()
 
 # --- 9. MAIN VIEW ---
 
-st.title("🎯 Rounding Solution Propensity Targets")
+st.title("🎯 Rounding Solution Target Facilities")
 
 st.markdown("""
-**Scoring Logic:** Facilities scored 0-100 based on Level of Care (40pts) + Clinical Sophistication (30pts) + Risk/Acuity (30pts)  
-**Exclusions:** Outpatient-only facilities and government entities (when enabled)
+**Scoring:** Facilities ranked 0-100 based on care setting, clinical capabilities, and risk indicators  
+**Filters:** Exclude outpatient-only facilities and government entities (when enabled)
 """)
 
 # Metrics
@@ -410,12 +416,12 @@ display_df.insert(0, 'Rank', display_df.index + 1)
 st.dataframe(
     display_df[[
         'Rank', 'name1', 'Location', 'setting_type', 
-        'propensity_score', 'loc_score', 'sophistication_score', 'acuity_score',
+        'score', 'loc_score', 'sophistication_score', 'acuity_score',
         'Indicators', 'orig_row'
     ]].rename(columns={
         'name1': 'Facility Name',
         'setting_type': 'Setting Type',
-        'propensity_score': 'Total Score',
+        'score': 'Total Score',
         'loc_score': 'LOC',
         'sophistication_score': 'Clinical',
         'acuity_score': 'Acuity',
@@ -447,7 +453,7 @@ st.markdown("""
 st.download_button(
     "📥 Download Current View (CSV)", 
     display_df.to_csv(index=False).encode('utf-8'), 
-    "rounding_propensity_targets.csv",
+    "rounding_targets.csv",
     mime="text/csv"
 )
 
@@ -482,9 +488,9 @@ with st.expander("📊 View Summary Statistics"):
     if len(display_df) > 0:
         st.markdown("**Score Distribution**")
         col3, col4, col5 = st.columns(3)
-        col3.metric("Mean Score", f"{display_df['propensity_score'].mean():.1f}")
-        col4.metric("Median Score", f"{display_df['propensity_score'].median():.1f}")
-        col5.metric("Score Range", f"{display_df['propensity_score'].min():.0f} - {display_df['propensity_score'].max():.0f}")
+        col3.metric("Mean Score", f"{display_df['score'].mean():.1f}")
+        col4.metric("Median Score", f"{display_df['score'].median():.1f}")
+        col5.metric("Score Range", f"{display_df['score'].min():.0f} - {display_df['score'].max():.0f}")
 
 with st.expander("🔍 Debug Info - Data Quality Check"):
     st.markdown("**All Unique Setting Types in Data**")
