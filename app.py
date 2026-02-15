@@ -38,7 +38,7 @@ st.markdown("""
         font-size: 11px;
         color: #808495;
         margin-top: -22px; 
-        margin-bottom: 12px; /* Breathing room before next slider */
+        margin-bottom: 12px; 
         padding: 0 5px;
     }
 
@@ -67,7 +67,7 @@ st.markdown("""
 if 'max_show' not in st.session_state:
     st.session_state.max_show = 100
 
-# --- 3. DATA LOADING ---
+# --- 3. DATA LOADING & PROCESSING ---
 INFRA_CODES = {'HI', 'PSYH', 'RES', 'RL', 'RS', 'DT', 'ADTX', 'ODTX', 'BDTX', 'CDTX', 'MDTX', 'SUMH', 'MH', 'SA', 'OTP'}
 CLINICAL_CODES = {'UB', 'MM', 'VTRL', 'BERI', 'GH', 'CO', 'VET', 'ADM', 'PW', 'SE', 'LABT', 'MSRV', 'METH', 'NXN'}
 PRIVATE_CODES = {'PVTP'}
@@ -84,6 +84,7 @@ def merge_tags(series):
 
 @st.cache_data(ttl=3600)
 def load_data():
+    # Authenticate using Streamlit Secrets
     scope = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
     creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
     client = gspread.authorize(creds)
@@ -94,6 +95,7 @@ def load_data():
         df['city_clean'] = df['city'].fillna('').astype(str).str.title()
         df['state_clean'] = df['state'].fillna('').astype(str).str.upper()
         
+        # Aggregate to deduplicate by Location
         rollup = df.groupby(['name1', 'city_clean', 'state_clean']).agg({
             'service_code_info': merge_tags,
             'phone': 'first',
@@ -130,7 +132,7 @@ st.sidebar.markdown('<div class="slider-label-row"><span>Less (-)</span><span>Mo
 w_clin = st.sidebar.slider("Clinical Depth", 1, 10, 3)
 st.sidebar.markdown('<div class="slider-label-row"><span>Less (-)</span><span>More (+)</span></div>', unsafe_allow_html=True)
 
-# Slider 3: Relabeled as Services Offered
+# Slider 3: Relabeled Services Offered
 w_std = st.sidebar.slider("Services Offered", 0, 5, 1)
 st.sidebar.markdown('<div class="slider-label-row"><span>Less (-)</span><span>More (+)</span></div>', unsafe_allow_html=True)
 
@@ -146,7 +148,7 @@ min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
 st.sidebar.number_input("Download Size (Rows)", key="max_show", min_value=1, step=1)
 
 # --- 5. SCORING ENGINE ---
-# Kicker for for-profit entities is 25 points
+# Private (For-Profit) baseline kicker is 25 points
 d['Raw_Score'] = (d['n_infra'] * w_infra) + (d['n_clinical'] * w_clin) + (d['n_private'] * 25) + (d['n_standard'] * w_std)
 current_max = d['Raw_Score'].max() if d['Raw_Score'].max() > 0 else 1
 d['Propensity Score'] = ((d['Raw_Score'] / current_max) * 100).round(0).astype(int)
@@ -158,21 +160,26 @@ if inc_res: patterns.append("RES|RL|RS")
 if inc_dtx: patterns.append("DT")
 if inc_hosp: patterns.append("HI|PSY")
 
+# Step 1: Care Type Fit (Deterministic)
 d_work = d[d['service_code_info'].str.contains("|".join(patterns), case=False, na=False)] if patterns else d
-
-# Apply Government Filter
-if exclude_gov:
-    d_work = d_work[~d_work['service_code_info'].str.contains('STG|FED|VAMC', case=False, na=False)]
-
-# Apply Non-Profit Filter
-if exclude_np:
-    d_work = d_work[d_work['n_private'] > 0]
-
 count_services = len(d_work)
+
+# Step 2: Score Fit (Heuristic Threshold)
 d_scored = d_work[d_work['Propensity Score'] >= min_propensity]
 count_scored = len(d_scored)
-d_final = d_scored.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
+
+# Step 3: Ownership/Target Cuts (Deterministic Filters)
+d_final = d_scored.copy()
+
+if exclude_gov:
+    d_final = d_final[~d_final['service_code_info'].str.contains('FED|STG|VAMC|LCLG', case=False, na=False)]
+
+if exclude_np:
+    # SAMHSA logic: If it's not Private For-Profit (PVTP) it's excluded here
+    d_final = d_final[d_final['n_private'] > 0]
+
 count_final = len(d_final)
+d_final = d_final.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
 
 # --- 7. TIE DETECTION ---
 current_limit = int(st.session_state.max_show)
@@ -187,7 +194,7 @@ else:
 # --- 8. MAIN VIEW ---
 st.title("📊 Scored Prospects")
 
-# WATERFALL METRICS
+# WATERFALL METRICS WITH DELTAS
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("1. Universe", f"{total_raw:,}")
 c2.metric("2. Unique Locs", f"{count_unique:,}", delta=f"-{total_raw - count_unique:,}", delta_color="off")
@@ -203,7 +210,7 @@ if count_ties > 0:
 else:
     c6.empty()
 
-# Search and State Filter
+# SEARCH AND TABLE
 c_search, c_state = st.columns([2, 1])
 search = c_search.text_input("🔍 Search Name").lower()
 states = c_state.multiselect("📍 State", options=sorted(d['state_clean'].unique()))
@@ -211,14 +218,17 @@ states = c_state.multiselect("📍 State", options=sorted(d['state_clean'].uniqu
 if search: display_df = display_df[display_df['name1'].str.lower().str.contains(search)]
 if states: display_df = display_df[display_df['state_clean'].isin(states)]
 
-# Rank logic
+# Inject Rank Column
 display_df = display_df.reset_index(drop=True)
 display_df.insert(0, 'Rank', display_df.index + 1)
 
-# Final Dataframe Display
 st.dataframe(
     display_df[['Rank', 'name1', 'Location', 'phone', 'Propensity Score', 'orig_row']].rename(
-        columns={'name1': 'Facility Name', 'phone': 'Phone', 'orig_row': 'Source Row(s)'}
+        columns={
+            'name1': 'Facility Name', 
+            'phone': 'Phone', 
+            'orig_row': 'Source Row(s)'
+        }
     ), 
     use_container_width=True, 
     height=550, 
