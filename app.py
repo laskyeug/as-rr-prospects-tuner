@@ -13,21 +13,31 @@ st.markdown("""
     div[data-testid="stMetric"] {padding: 0px 0px 5px 0px;}
     .stCheckbox {margin-bottom: -15px;}
     .stSlider {padding-top: 10px; padding-bottom: 20px;}
-    /* Button Styling to fit Metric Column */
+    
+    /* Clean Button Styling: Single line, no border, flat look */
     div.stButton > button {
         width: 100%;
         margin-top: -15px; 
-        font-weight: bold;
+        border: none;
+        background-color: #2b303b; /* Darker flat background */
+        color: white;
+        font-weight: 500;
+        box-shadow: none;
+    }
+    div.stButton > button:hover {
+        background-color: #ff4b4b; /* Highlight on hover */
+        border: none;
+        color: white;
     }
     </style>
     """, unsafe_allow_html=True)
 
 # --- 2. SESSION STATE MANAGEMENT ---
-# We use a single source of truth: st.session_state.download_limit
-if 'download_limit' not in st.session_state:
-    st.session_state.download_limit = 1000
+# Initialize the key 'max_show' if it doesn't exist
+if 'max_show' not in st.session_state:
+    st.session_state.max_show = 1000
 
-# --- 3. CODE CATEGORIZATION ---
+# --- 3. DATA LOADING ---
 INFRA_CODES = {'HI', 'PSYH', 'RES', 'RL', 'RS', 'DT', 'ADTX', 'ODTX', 'BDTX', 'CDTX', 'MDTX', 'SUMH', 'MH', 'SA', 'OTP'}
 CLINICAL_CODES = {'UB', 'MM', 'VTRL', 'BERI', 'GH', 'CO', 'VET', 'ADM', 'PW', 'SE', 'LABT', 'MSRV', 'METH', 'NXN'}
 PRIVATE_CODES = {'PVTP'}
@@ -96,7 +106,6 @@ with st.sidebar.expander("1. Filter Care Types (Include)", expanded=True):
 st.sidebar.divider()
 
 st.sidebar.subheader("2. Define 'Propensity'")
-# Factor Sliders
 w_infra = st.sidebar.slider("Infrastructure Weight", 1, 10, 5)
 w_priv = st.sidebar.slider("Private Ownership Bonus", 0, 20, 10)
 w_clin = st.sidebar.slider("Clinical Depth Weight", 1, 10, 3)
@@ -107,23 +116,13 @@ st.sidebar.divider()
 st.sidebar.subheader("3. Cutoff & Limits")
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
 
-# Sidebar Input: Updates the session state when changed
-def on_limit_change():
-    st.session_state.download_limit = st.session_state.sidebar_limit
-
-st.sidebar.number_input(
-    "Download Size (Rows)", 
-    value=st.session_state.download_limit,
-    key="sidebar_limit",
-    on_change=on_limit_change
-)
+# CLEAN STATE HANDLING: No 'value=' argument prevents the warning loop
+st.sidebar.number_input("Download Size (Rows)", key="max_show")
 
 st.sidebar.divider()
 exclude_gov = st.sidebar.toggle("Exclude Govt/VAMC", value=True)
 
 # --- 5. SCORING & WATERFALL ---
-
-# Steps 1-2
 count_unique = len(d)
 
 # Step 3: Care Type Fit
@@ -163,21 +162,18 @@ count_final = len(d_final)
 # Sort
 d_final = d_final.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
 
-# --- 6. TIE DETECTION LOGIC ---
-current_limit = st.session_state.download_limit
+# --- 6. TIE DETECTION ---
+current_limit = st.session_state.max_show
 count_ties = 0
 has_hidden_ties = False
 
-# Only calculate ties if we are cutting off the list
 if count_final > current_limit:
     # Identify the score of the LAST visible record
     cutoff_record = d_final.iloc[current_limit - 1]
     cutoff_score = cutoff_record['Propensity Score']
     
-    # Look at everything AFTER the limit
+    # Check hidden records
     hidden_records = d_final.iloc[current_limit:]
-    
-    # Count how many hidden records share that same score
     tie_matches = hidden_records[hidden_records['Propensity Score'] == cutoff_score]
     count_ties = len(tie_matches)
     
@@ -199,19 +195,16 @@ c3.metric("3. Care Type Fit", f"{count_services:,}", delta=f"-{count_unique - co
 c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"-{count_services - count_scored:,}", delta_color="off")
 c5.metric("5. Total Qualified", f"{count_final:,}", delta=f"-{count_scored - count_final:,}", delta_color="off")
 
-# 6th Metric: EXCLUSIVE TIE HANDLER
+# 6th Metric: ONLY APPEARS IF TIES EXIST
 if has_hidden_ties:
     c6.metric("6. Hidden Ties", f"{count_ties:,}")
     
-    # Define the callback to update state safely
     def add_ties():
-        st.session_state.download_limit += count_ties
-        # Also sync the sidebar widget to match
-        st.session_state.sidebar_limit = st.session_state.download_limit
-    
-    c6.button("➕ Adjust Download Size", on_click=add_ties)
+        st.session_state.max_show += count_ties
+        
+    # Simplified Button Text
+    c6.button("➕ Include Ties", on_click=add_ties)
 else:
-    # Intentionally empty if no ties (or if they have been added)
     c6.empty()
 
 # Search
