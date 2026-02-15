@@ -639,9 +639,9 @@ with st.sidebar.expander("🎚️ Minimum Scores", expanded=False):
     min_total = st.slider("Total Score", 0, 100, 67, 1)
     st.caption("Pillar minimums (0 = no filter, 10 = require max)")
     min_loc_pct = st.slider("Level of Care", 0, 10, 5, 1)
-    min_clinical_pct = st.slider("Clinical Complexity", 0, 10, 3, 1)
-    min_risk_pct = st.slider("Sentinel Event Risk", 0, 10, 6, 1)
-    min_quality_pct = st.slider("Institutional Quality", 0, 10, 4, 1)
+    min_clinical_pct = st.slider("Clinical Complexity", 0, 10, 5, 1)
+    min_risk_pct = st.slider("Sentinel Event Risk", 0, 10, 5, 1)
+    min_quality_pct = st.slider("Institutional Quality", 0, 10, 5, 1)
 
     # Convert 0-10 scale to actual pillar thresholds
     min_loc = int(min_loc_pct * PILLAR_CAPS['loc'] / 10)
