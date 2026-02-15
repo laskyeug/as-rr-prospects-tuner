@@ -13,12 +13,21 @@ st.set_page_config(page_title="Rounding Solution Targets", layout="wide")
 
 st.markdown("""
 <style>
-.block-container {padding-top: 1.5rem; padding-bottom: 0rem;}
+.block-container {padding-top: 0.8rem; padding-bottom: 0rem; max-width: 100%;}
 [data-testid="stSidebar"] {width: 340px !important;}
 [data-testid="stSidebarNav"] {display: none;}
 [data-testid="stSidebar"] h1 {margin-top: -30px !important; margin-bottom: 0.5rem !important; font-size: 1.7rem !important;}
 [data-testid="stSidebar"] h3 {margin-top: 0.4rem !important; margin-bottom: 0.1rem !important; font-size: 1.05rem !important; font-weight: 600;}
 [data-testid="stSidebar"] hr {margin: 0.3rem 0px !important;}
+/* Tighten main content vertical spacing */
+[data-testid="stMetric"] {padding-bottom: 0 !important;}
+[data-testid="stMetricValue"] {font-size: 1.6rem !important;}
+h1 {margin-bottom: 0 !important; padding-bottom: 0 !important; font-size: 1.8rem !important;}
+hr {margin: 0.3rem 0 !important;}
+.stDivider {margin: 0.2rem 0 !important;}
+div[data-testid="stTextInput"], div[data-testid="stMultiSelect"] {margin-bottom: -0.5rem !important;}
+.legend-text {font-size: 0.78rem; color: #808495; line-height: 1.4; margin-top: -0.3rem;}
+.legend-text b {color: #b0b4c0;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -696,8 +705,9 @@ else:
 st.title("🎯 Rounding Solution — Target Facilities")
 
 st.markdown(
-    "Facilities ranked **0–100** across four pillars: "
-    "care setting · clinical complexity · sentinel event risk · institutional quality"
+    '<span style="font-size:0.9rem; color:#808495;">Ranked 0–100 across four pillars: '
+    'care setting · clinical complexity · sentinel event risk · institutional quality</span>',
+    unsafe_allow_html=True,
 )
 
 # --- Funnel Metrics ---
@@ -713,7 +723,7 @@ if count_ties > 0:
         st.session_state.pending_tie_add = count_ties
         st.rerun()
 
-st.divider()
+st.markdown('<hr style="margin:0.2rem 0;">', unsafe_allow_html=True)
 
 # --- Search / State filter ---
 c_search, c_state = st.columns([2, 1])
@@ -751,7 +761,7 @@ st.dataframe(
         'Pillars': 'L·C·R·Q',
     }),
     use_container_width=True,
-    height=560,
+    height=580,
     hide_index=True,
     column_config={
         "Rank": st.column_config.NumberColumn("Rank", width=55),
@@ -766,11 +776,14 @@ st.dataframe(
     }
 )
 
-# --- Legend ---
+# --- Compact legend ---
 st.markdown(
-    "**Gaps:** MAT · MAT↑ (limited) · AP (antipsychotics) · Adv Tx · COD · SMI · SPS · DTX · Crisis · Accred  \n"
-    "**L·C·R·Q:** Level of Care (0-30) · Clinical (0-30) · Risk (0-25) · Quality (0-15)  \n"
-    "**Data:** ✓ High (90%+) · ~ Medium (75-89%) · ⚠ Low (<75%) confidence based on explicit vs inferred data"
+    '<div class="legend-text">'
+    '<b>L·C·R·Q:</b> Level of Care (30) · Clinical (30) · Risk (25) · Quality (15) &nbsp;|&nbsp; '
+    '<b>Missing:</b> MAT · MAT↑ limited · AP antipsych · Adv Tx · COD · SMI · SPS · DTX · Crisis · Accred &nbsp;|&nbsp; '
+    '<b>Data:</b> ✓ &ge;90% · ~ 75-89% · ⚠ &lt;75%'
+    '</div>',
+    unsafe_allow_html=True,
 )
 
 
