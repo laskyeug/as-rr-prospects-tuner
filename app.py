@@ -1,15 +1,16 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import gspread
 from google.oauth2.service_account import Credentials
 
 # --- 1. CONFIG & STYLING ---
-st.set_page_config(page_title="A/S Propensity Engine", layout="wide")
+st.set_page_config(page_title="Rounding Solution Propensity Engine", layout="wide")
 
 st.markdown("""
     <style>
     .block-container {padding-top: 1.5rem; padding-bottom: 0rem;}
-    [data-testid="stSidebar"] {width: 310px !important;}
+    [data-testid="stSidebar"] {width: 320px !important;}
     [data-testid="stSidebarNav"] {display: none;}
     [data-testid="stSidebar"] h1 {margin-top: -30px !important; margin-bottom: 0.5rem !important; font-size: 1.7rem !important;}
     [data-testid="stSidebar"] h3 {margin-top: 0.4rem !important; margin-bottom: 0.1rem !important; font-size: 1.05rem !important; font-weight: 600;}
@@ -22,142 +23,353 @@ st.markdown("""
 if 'max_show' not in st.session_state:
     st.session_state.max_show = 100
 
-# --- 3. DATA LOADING & DEFINITIONS ---
-ASSET_CODES = {'HI', 'PSYH', 'RES', 'RL', 'RS', 'DT', 'ADTX', 'ODTX', 'BDTX', 'CDTX', 'MDTX'}
-MEDICAL_CODES = {'METH', 'NXN', 'VTRL', 'LABT', 'MM', 'MSRV', 'UB', 'BERI', 'GH'}
-OPS_CODES = {'PH', 'IOP', 'CBT', 'DBT', 'MI', 'ANG', 'REL', 'TRC', 'SAE', 'TCC', 'CM', 'SS', 'TA'}
+# --- 3. SCORING DEFINITIONS ---
 
-GOVT_CODES = {'FED', 'STG', 'VAMC', 'LCLG', 'GVT', 'STLG'}
-NP_CODES = {'PVTN'}
+# Service code categories for scoring
+LOC_INDICATORS = {
+    'PSYCH_HOSPITAL': ['PSYH'],
+    'HOSPITAL_INPATIENT': ['HI'],  # Will use word boundary regex
+    'RESIDENTIAL': ['RES', 'RL', 'RS'],
+    'DETOX': ['DT', 'ADTX', 'BDTX', 'CDTX', 'MDTX', 'ODTX']
+}
 
-def count_category(tag_string, category_set):
-    tags = set([t.strip() for t in str(tag_string).split('*') if t.strip()])
-    return len(tags.intersection(category_set))
+CLINICAL_SOPHISTICATION = {
+    'MAT_MEDICATIONS': ['METH', 'BERI', 'NXN', 'VTRL', 'BWN', 'BWON', 'BSDM'],  # 4 pts each
+    'PSYCH_SERVICES': ['MMD', 'ANTPYCH', 'LABT', 'MHPA'],  # 3 pts each
+    'MEDICAL_SERVICES': ['MSRV', 'LABT', 'MM', 'UB', 'MHPA', 'IPC']  # 2 pts each
+}
+
+ACUITY_INDICATORS = {
+    'COOCCURRING': ['SUMH'],  # 10 pts
+    'SMI_PROGRAMS': ['SMI'],  # 8 pts
+    'DETOX': ['DT', 'ADTX', 'BDTX', 'CDTX', 'MDTX', 'ODTX'],  # 7 pts
+    'CRISIS_SERVICES': ['CIT', 'PEON', 'PEOFF', 'WI']  # 5 pts
+}
+
+GOVT_CODES = ['FED', 'STG', 'VAMC', 'LCCG', 'GVT', 'STLG', 'TBG']
+
+# --- 4. SCORING FUNCTIONS ---
+
+def has_code(codes_str, code_list):
+    """Check if any code from list exists in codes string"""
+    codes_upper = str(codes_str).upper()
+    return any(code in codes_upper for code in code_list)
+
+def count_codes(codes_str, code_list):
+    """Count how many codes from list exist in codes string"""
+    codes_upper = str(codes_str).upper()
+    return sum(1 for code in code_list if code in codes_upper)
+
+def calculate_loc_score(row):
+    """Calculate Level of Care score (0-40 points)"""
+    codes = str(row['service_code_info']).upper()
+    
+    # Check for psychiatric hospital
+    if 'PSYH' in codes:
+        return 40
+    
+    # Check for hospital inpatient (word boundary to avoid HID, HIT, etc.)
+    if has_code(codes, LOC_INDICATORS['HOSPITAL_INPATIENT']):
+        # More precise check for HI as standalone
+        if ' HI ' in f" {codes} " or codes.startswith('HI ') or codes.endswith(' HI'):
+            return 35
+    
+    # Check for residential
+    has_residential = has_code(codes, LOC_INDICATORS['RESIDENTIAL'])
+    has_detox = has_code(codes, LOC_INDICATORS['DETOX'])
+    
+    if has_residential:
+        return 30 if has_detox else 25
+    elif has_detox:
+        return 20
+    
+    return 0  # Outpatient only
+
+def calculate_sophistication_score(row):
+    """Calculate Clinical Sophistication score (0-30 points)"""
+    codes = str(row['service_code_info']).upper()
+    
+    mat_count = count_codes(codes, CLINICAL_SOPHISTICATION['MAT_MEDICATIONS'])
+    psych_count = count_codes(codes, CLINICAL_SOPHISTICATION['PSYCH_SERVICES'])
+    medical_count = count_codes(codes, CLINICAL_SOPHISTICATION['MEDICAL_SERVICES'])
+    
+    score = (mat_count * 4) + (psych_count * 3) + (medical_count * 2)
+    
+    return min(30, score)  # Cap at 30
+
+def calculate_acuity_score(row):
+    """Calculate Risk/Acuity score (0-30 points)"""
+    codes = str(row['service_code_info']).upper()
+    
+    score = 0
+    
+    if has_code(codes, ACUITY_INDICATORS['COOCCURRING']):
+        score += 10
+    
+    if has_code(codes, ACUITY_INDICATORS['SMI_PROGRAMS']):
+        score += 8
+    
+    if has_code(codes, ACUITY_INDICATORS['DETOX']):
+        score += 7
+    
+    if has_code(codes, ACUITY_INDICATORS['CRISIS_SERVICES']):
+        score += 5
+    
+    return min(30, score)  # Cap at 30
+
+def get_setting_type(row):
+    """Determine primary setting type for display"""
+    codes = str(row['service_code_info']).upper()
+    
+    if 'PSYH' in codes:
+        return 'Psychiatric Hospital'
+    
+    if has_code(codes, LOC_INDICATORS['HOSPITAL_INPATIENT']):
+        if ' HI ' in f" {codes} " or codes.startswith('HI ') or codes.endswith(' HI'):
+            return 'Hospital Inpatient'
+    
+    has_residential = has_code(codes, LOC_INDICATORS['RESIDENTIAL'])
+    has_detox = has_code(codes, LOC_INDICATORS['DETOX'])
+    
+    if has_residential and has_detox:
+        return 'Residential + Detox'
+    elif has_residential:
+        return 'Residential'
+    elif has_detox:
+        return 'Detox Only'
+    
+    return 'Outpatient'
 
 def merge_tags(series):
-    all_tags = "*".join(series.astype(str)).split('*')
+    """Merge service code tags from multiple rows"""
+    all_tags = " * ".join(series.astype(str)).split('*')
     unique_tags = sorted(list(set([t.strip() for t in all_tags if t.strip()])))
     return " * ".join(unique_tags)
 
+# --- 5. DATA LOADING ---
+
 @st.cache_data(ttl=3600)
 def load_data():
+    """Load data from Google Sheet and calculate propensity scores"""
+    
+    # Connect to Google Sheets
     scope = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
     creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
     client = gspread.authorize(creds)
+    
     try:
         sheet = client.open("SAMHSA_Master_Data").sheet1
         df = pd.DataFrame(sheet.get_all_records())
         df['orig_row'] = df.index + 2
+        
+        total_raw = len(df)
+        
+        # Clean location fields
         df['city_clean'] = df['city'].fillna('').astype(str).str.title()
         df['state_clean'] = df['state'].fillna('').astype(str).str.upper()
         
-        rollup = df.groupby(['name1', 'city_clean', 'state_clean']).agg({
+        # Calculate scores for each row
+        df['loc_score'] = df.apply(calculate_loc_score, axis=1)
+        df['sophistication_score'] = df.apply(calculate_sophistication_score, axis=1)
+        df['acuity_score'] = df.apply(calculate_acuity_score, axis=1)
+        df['setting_type'] = df.apply(get_setting_type, axis=1)
+        
+        # Check if government facility
+        df['is_govt'] = df['service_code_info'].apply(lambda x: has_code(x, GOVT_CODES))
+        
+        # Calculate total propensity score
+        df['propensity_score'] = (
+            df['loc_score'] + 
+            df['sophistication_score'] + 
+            df['acuity_score']
+        ).round(0).astype(int)
+        
+        # Get key indicators for display
+        df['has_cooccurring'] = df['service_code_info'].apply(
+            lambda x: has_code(x, ACUITY_INDICATORS['COOCCURRING'])
+        )
+        df['has_smi'] = df['service_code_info'].apply(
+            lambda x: has_code(x, ACUITY_INDICATORS['SMI_PROGRAMS'])
+        )
+        df['has_detox'] = df['service_code_info'].apply(
+            lambda x: has_code(x, ACUITY_INDICATORS['DETOX'])
+        )
+        df['has_mat'] = df['service_code_info'].apply(
+            lambda x: count_codes(x, CLINICAL_SOPHISTICATION['MAT_MEDICATIONS']) > 0
+        )
+        
+        # Roll up by location (keep highest scoring record for each name+city+state)
+        rollup = df.sort_values('propensity_score', ascending=False).groupby(
+            ['name1', 'city_clean', 'state_clean'], 
+            as_index=False
+        ).agg({
             'service_code_info': merge_tags,
             'phone': 'first',
-            'orig_row': lambda x: ", ".join(x.astype(str))
-        }).reset_index()
+            'orig_row': lambda x: ", ".join(x.astype(str)),
+            'propensity_score': 'max',
+            'loc_score': 'max',
+            'sophistication_score': 'max',
+            'acuity_score': 'max',
+            'setting_type': 'first',
+            'Facility_Type': lambda x: ' & '.join(sorted(set(x))) if 'Facility_Type' in df.columns else 'Unknown',
+            'is_govt': 'max',
+            'has_cooccurring': 'max',
+            'has_smi': 'max',
+            'has_detox': 'max',
+            'has_mat': 'max'
+        })
         
-        rollup['Location'] = rollup.apply(lambda x: f"{x['city_clean']}, {x['state_clean']}" if x['city_clean'] else x['state_clean'], axis=1)
+        # Create location field
+        rollup['Location'] = rollup.apply(
+            lambda x: f"{x['city_clean']}, {x['state_clean']}" if x['city_clean'] else x['state_clean'], 
+            axis=1
+        )
         
-        # Calculate Percentage Intensities (Density of tags)
-        rollup['pct_assets'] = (rollup['service_code_info'].apply(lambda x: count_category(x, ASSET_CODES)) / len(ASSET_CODES)) * 100
-        rollup['pct_medical'] = (rollup['service_code_info'].apply(lambda x: count_category(x, MEDICAL_CODES)) / len(MEDICAL_CODES)) * 100
-        rollup['pct_ops'] = (rollup['service_code_info'].apply(lambda x: count_category(x, OPS_CODES)) / len(OPS_CODES)) * 100
+        return rollup, total_raw
         
-        rollup['is_govt'] = rollup['service_code_info'].str.contains('|'.join(GOVT_CODES), case=False, na=False)
-        rollup['is_np'] = rollup['service_code_info'].str.contains('|'.join(NP_CODES), case=False, na=False)
-        
-        return rollup, len(df)
     except Exception as e:
-        st.error(f"❌ Connection Failed: {e}"); st.stop()
+        st.error(f"❌ Connection Failed: {e}")
+        st.stop()
 
+# Load data
 d, total_raw = load_data()
-
-# --- 4. SIDEBAR CONTROL BOARD ---
-st.sidebar.title("🎛️ Propensity Engine")
-
-with st.sidebar.expander("Care Funnel Filters", expanded=True):
-    inc_res = st.checkbox("Residential / Beds", value=True)
-    inc_dtx = st.checkbox("Detox Capability", value=True)
-    inc_hosp = st.checkbox("Hospital / Inpatient", value=True)
-
-st.sidebar.subheader("Hurdle Intensity (%)")
-h_assets = st.sidebar.slider("Asset Intensity", 0, 100, 20)
-st.sidebar.markdown('<div class="slider-label-row"><span>No Hurdle</span><span>Mandatory</span></div>', unsafe_allow_html=True)
-
-h_medical = st.sidebar.slider("Medical Intensity", 0, 100, 15)
-st.sidebar.markdown('<div class="slider-label-row"><span>No Hurdle</span><span>Mandatory</span></div>', unsafe_allow_html=True)
-
-h_ops = st.sidebar.slider("Operational Density", 0, 100, 10)
-st.sidebar.markdown('<div class="slider-label-row"><span>No Hurdle</span><span>Mandatory</span></div>', unsafe_allow_html=True)
-
-st.sidebar.divider()
-exclude_non_priv = st.sidebar.toggle("Exclude Explicit Non-Private", value=True)
-
-st.sidebar.divider()
-min_floor = st.sidebar.slider("Min. Propensity Floor", 0, 100, 40)
-st.sidebar.number_input("Display Row Count", key="max_show", min_value=1, step=1)
-
-# --- 5. SCORING ENGINE ---
-# Total weighting logic
-total_w = h_assets + h_medical + h_ops
-if total_w == 0:
-    d['Propensity Score'] = ((d['pct_assets'] + d['pct_medical'] + d['pct_ops']) / 3)
-else:
-    d['Propensity Score'] = (
-        (d['pct_assets'] * (h_assets/total_w)) + 
-        (d['pct_medical'] * (h_medical/total_w)) + 
-        (d['pct_ops'] * (h_ops/total_w))
-    )
-
-d['Propensity Score'] = d['Propensity Score'].round(0).astype(int)
-
-# --- 6. FILTERING ENGINE ---
 count_unique = len(d)
 
-# Step 1: Care Types
-patterns = []
-if inc_res: patterns.append("RES|RL|RS")
-if inc_dtx: patterns.append("DT|ADTX")
-if inc_hosp: patterns.append("HI|PSY")
-d_work = d[d['service_code_info'].str.contains("|".join(patterns), case=False, na=False)] if patterns else d
-count_fit = len(d_work)
+# --- 6. SIDEBAR CONTROL BOARD ---
 
-# Step 2: The Hurdles (Only filter if slider > 0)
-d_scored = d_work[
-    ((h_assets == 0) | (d_work['pct_assets'] >= h_assets)) &
-    ((h_medical == 0) | (d_work['pct_medical'] >= h_medical)) &
-    ((h_ops == 0) | (d_work['pct_ops'] >= h_ops)) &
-    (d_work['Propensity Score'] >= min_floor)
+st.sidebar.title("🎯 Propensity Engine")
+
+st.sidebar.markdown("### Scoring Model")
+st.sidebar.markdown("""
+**Level of Care** (0-40 pts)
+- Psych Hospital: 40
+- Hospital Inpatient: 35  
+- Residential+Detox: 30
+- Residential: 25
+
+**Clinical Sophistication** (0-30 pts)
+- MAT meds, psych services, medical
+
+**Risk/Acuity** (0-30 pts)
+- Co-occurring, SMI, detox, crisis
+""")
+
+st.sidebar.divider()
+
+with st.sidebar.expander("🏥 Setting Filters", expanded=True):
+    inc_psych_hosp = st.checkbox("Psychiatric Hospitals", value=True)
+    inc_hosp_inpt = st.checkbox("Hospital Inpatient", value=True)
+    inc_residential = st.checkbox("Residential (24hr)", value=True)
+    inc_detox = st.checkbox("Detox Settings", value=False)
+
+st.sidebar.divider()
+
+with st.sidebar.expander("🎚️ Score Thresholds", expanded=True):
+    min_loc = st.slider("Minimum Level of Care Score", 0, 40, 25, 5)
+    st.markdown('<div class="slider-label-row"><span>Any</span><span>Psych Hospital Only</span></div>', unsafe_allow_html=True)
+    
+    min_clinical = st.slider("Minimum Clinical Score", 0, 30, 0, 5)
+    st.markdown('<div class="slider-label-row"><span>Any</span><span>Maximum</span></div>', unsafe_allow_html=True)
+    
+    min_acuity = st.slider("Minimum Acuity Score", 0, 30, 0, 5)
+    st.markdown('<div class="slider-label-row"><span>Any</span><span>Maximum</span></div>', unsafe_allow_html=True)
+
+st.sidebar.divider()
+
+with st.sidebar.expander("⚙️ Additional Filters", expanded=False):
+    require_cooccurring = st.checkbox("Require Co-occurring Treatment", value=False)
+    require_mat = st.checkbox("Require MAT Capability", value=False)
+    require_smi = st.checkbox("Require SMI Programs", value=False)
+
+st.sidebar.divider()
+
+exclude_govt = st.sidebar.toggle("Exclude Explicit Government", value=True)
+
+st.sidebar.divider()
+
+min_total_score = st.sidebar.slider("Minimum Total Propensity Score", 0, 100, 50, 5)
+st.sidebar.number_input("Display Row Count", key="max_show", min_value=1, step=1)
+
+# --- 7. FILTERING ENGINE ---
+
+# Start with all data
+d_work = d.copy()
+
+# Filter by setting type
+setting_patterns = []
+if inc_psych_hosp:
+    d_work = d_work[d_work['setting_type'] == 'Psychiatric Hospital']
+if inc_hosp_inpt:
+    d_work = d_work[d_work['setting_type'].str.contains('Hospital Inpatient', na=False) | 
+                    (d_work['setting_type'] == 'Hospital Inpatient')]
+if inc_residential:
+    d_work = d_work[d_work['setting_type'].str.contains('Residential', na=False)]
+if inc_detox:
+    d_work = d_work[d_work['setting_type'].str.contains('Detox', na=False)]
+
+# If no settings selected, filter to at least non-outpatient
+if not any([inc_psych_hosp, inc_hosp_inpt, inc_residential, inc_detox]):
+    d_work = d_work[d_work['setting_type'] != 'Outpatient']
+
+count_setting = len(d_work)
+
+# Apply score thresholds
+d_work = d_work[
+    (d_work['loc_score'] >= min_loc) &
+    (d_work['sophistication_score'] >= min_clinical) &
+    (d_work['acuity_score'] >= min_acuity) &
+    (d_work['propensity_score'] >= min_total_score)
 ]
-count_scored = len(d_scored)
 
-# Step 3: Ownership
-d_final = d_scored.copy()
-if exclude_non_priv:
-    d_final = d_final[~(d_final['is_govt'] | d_final['is_np'])]
-count_final = len(d_final)
+count_scored = len(d_work)
 
-d_final = d_final.sort_values(by=['Propensity Score', 'name1'], ascending=[False, True])
+# Apply capability filters
+if require_cooccurring:
+    d_work = d_work[d_work['has_cooccurring']]
+if require_mat:
+    d_work = d_work[d_work['has_mat']]
+if require_smi:
+    d_work = d_work[d_work['has_smi']]
 
-# --- 7. TIE DETECTION ---
+count_capability = len(d_work)
+
+# Apply ownership filter
+if exclude_govt:
+    d_work = d_work[~d_work['is_govt']]
+
+count_final = len(d_work)
+
+# Sort by propensity score
+d_final = d_work.sort_values(by=['propensity_score', 'name1'], ascending=[False, True]).copy()
+
+# --- 8. TIE DETECTION ---
+
 current_limit = int(st.session_state.max_show)
 count_ties = 0
+
 if count_final > current_limit:
-    cutoff_score = d_final.iloc[current_limit - 1]['Propensity Score']
-    count_ties = len(d_final.iloc[current_limit:][d_final.iloc[current_limit:]['Propensity Score'] == cutoff_score])
+    cutoff_score = d_final.iloc[current_limit - 1]['propensity_score']
+    count_ties = len(d_final.iloc[current_limit:][d_final.iloc[current_limit:]['propensity_score'] == cutoff_score])
     display_df = d_final.head(current_limit).copy()
 else:
     display_df = d_final.copy()
 
-# --- 8. MAIN VIEW ---
-st.title("📊 Commercial Propensity Targets")
+# --- 9. MAIN VIEW ---
 
+st.title("🎯 Rounding Solution Propensity Targets")
+
+st.markdown("""
+**Scoring Logic:** Facilities scored 0-100 based on Level of Care (40pts) + Clinical Sophistication (30pts) + Risk/Acuity (30pts)  
+**Exclusions:** Outpatient-only facilities and government entities (when enabled)
+""")
+
+# Metrics
 c1, c2, c3, c4, c5, c6 = st.columns(6)
+
 c1.metric("1. Universe", f"{total_raw:,}")
-c2.metric("2. Locs", f"{count_unique:,}", delta=f"-{total_raw - count_unique:,}", delta_color="off")
-c3.metric("3. Care Fit", f"{count_fit:,}", delta=f"-{count_unique - count_fit:,}", delta_color="off")
-c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"-{count_fit - count_scored:,}", delta_color="off")
+c2.metric("2. Locations", f"{count_unique:,}", delta=f"-{total_raw - count_unique:,}", delta_color="off")
+c3.metric("3. Setting Fit", f"{count_setting:,}", delta=f"-{count_unique - count_setting:,}", delta_color="off")
+c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"-{count_setting - count_scored:,}", delta_color="off")
 c5.metric("5. Qualified", f"{count_final:,}", delta=f"-{count_scored - count_final:,}", delta_color="off")
 
 if count_ties > 0:
@@ -166,28 +378,99 @@ if count_ties > 0:
         st.session_state.max_show += count_ties
         st.rerun()
 
+st.divider()
+
+# Search and filter
 c_search, c_state = st.columns([2, 1])
-search = c_search.text_input("🔍 Search Name").lower()
-states = c_state.multiselect("📍 State", options=sorted(d['state_clean'].unique()))
+search = c_search.text_input("🔍 Search Facility Name").lower()
+states = c_state.multiselect("📍 State Filter", options=sorted(d['state_clean'].unique()))
 
-if search: display_df = display_df[display_df['name1'].str.lower().str.contains(search)]
-if states: display_df = display_df[display_df['state_clean'].isin(states)]
+if search:
+    display_df = display_df[display_df['name1'].str.lower().str.contains(search)]
+if states:
+    display_df = display_df[display_df['state_clean'].isin(states)]
 
+# Add indicators column
+display_df['Indicators'] = (
+    display_df['has_cooccurring'].map({True: '🔀', False: ''}) + 
+    display_df['has_detox'].map({True: '💊', False: ''}) +
+    display_df['has_smi'].map({True: '🧠', False: ''}) +
+    display_df['has_mat'].map({True: '💉', False: ''})
+).str.strip()
+
+# Prepare display
 display_df = display_df.reset_index(drop=True)
 display_df.insert(0, 'Rank', display_df.index + 1)
 
+# Display dataframe
 st.dataframe(
-    display_df[['Rank', 'name1', 'Location', 'Propensity Score', 'orig_row']].rename(
-        columns={'name1': 'Facility Name', 'orig_row': 'Source Row(s)'}
-    ), 
+    display_df[[
+        'Rank', 'name1', 'Location', 'setting_type', 
+        'propensity_score', 'loc_score', 'sophistication_score', 'acuity_score',
+        'Indicators', 'orig_row'
+    ]].rename(columns={
+        'name1': 'Facility Name',
+        'setting_type': 'Setting Type',
+        'propensity_score': 'Total Score',
+        'loc_score': 'LOC',
+        'sophistication_score': 'Clinical',
+        'acuity_score': 'Acuity',
+        'orig_row': 'Source Row(s)'
+    }), 
     use_container_width=True, 
     height=550, 
     hide_index=True, 
     column_config={
-        "Rank": st.column_config.NumberColumn("Rank", width=40),
-        "Propensity Score": st.column_config.ProgressColumn("Propensity", format="%d", min_value=0, max_value=100, width=80),
-        "Source Row(s)": st.column_config.TextColumn("Source Row(s)", width=200)
+        "Rank": st.column_config.NumberColumn("Rank", width=60),
+        "Facility Name": st.column_config.TextColumn("Facility Name", width=250),
+        "Location": st.column_config.TextColumn("Location", width=180),
+        "Setting Type": st.column_config.TextColumn("Setting", width=150),
+        "Total Score": st.column_config.ProgressColumn("Score", format="%d", min_value=0, max_value=100, width=80),
+        "LOC": st.column_config.NumberColumn("LOC", width=50),
+        "Clinical": st.column_config.NumberColumn("Clin", width=50),
+        "Acuity": st.column_config.NumberColumn("Acuity", width=50),
+        "Indicators": st.column_config.TextColumn("Flags", width=80),
+        "Source Row(s)": st.column_config.TextColumn("Source Row(s)", width=150)
     }
 )
 
-st.download_button("📥 Download (CSV)", d_final.to_csv(index=False).encode('utf-8'), "Propensity_Targets.csv")
+# Legend
+st.markdown("""
+**Indicators:** 🔀 Co-occurring | 💊 Detox | 🧠 SMI Programs | 💉 MAT Capable
+""")
+
+# Download
+st.download_button(
+    "📥 Download Current View (CSV)", 
+    display_df.to_csv(index=False).encode('utf-8'), 
+    "rounding_propensity_targets.csv",
+    mime="text/csv"
+)
+
+# Summary statistics
+with st.expander("📊 View Summary Statistics"):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Setting Type Distribution**")
+        st.dataframe(
+            display_df['setting_type'].value_counts().reset_index()
+            .rename(columns={'setting_type': 'Setting Type', 'count': 'Count'}),
+            hide_index=True,
+            use_container_width=True
+        )
+    
+    with col2:
+        st.markdown("**Top States**")
+        st.dataframe(
+            display_df['state_clean'].value_counts().head(10).reset_index()
+            .rename(columns={'state_clean': 'State', 'count': 'Count'}),
+            hide_index=True,
+            use_container_width=True
+        )
+    
+    st.markdown("**Score Distribution**")
+    col3, col4, col5 = st.columns(3)
+    col3.metric("Mean Score", f"{display_df['propensity_score'].mean():.1f}")
+    col4.metric("Median Score", f"{display_df['propensity_score'].median():.1f}")
+    col5.metric("Score Range", f"{display_df['propensity_score'].min():.0f} - {display_df['propensity_score'].max():.0f}")
