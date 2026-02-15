@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import gspread
+import re
 from google.oauth2.service_account import Credentials
 
 # --- 1. CONFIG & STYLING ---
@@ -68,11 +69,10 @@ def calculate_loc_score(row):
     if 'PSYH' in codes:
         return 40
     
-    # Check for hospital inpatient (word boundary to avoid HID, HIT, etc.)
-    if has_code(codes, LOC_INDICATORS['HOSPITAL_INPATIENT']):
-        # More precise check for HI as standalone
-        if ' HI ' in f" {codes} " or codes.startswith('HI ') or codes.endswith(' HI'):
-            return 35
+    # Check for hospital inpatient (need word boundary to avoid HID, HIT, etc.)
+    # Service codes are separated by spaces or asterisks like "SA * HI * OP"
+    if re.search(r'\bHI\b', codes):
+        return 35
     
     # Check for residential
     has_residential = has_code(codes, LOC_INDICATORS['RESIDENTIAL'])
@@ -124,9 +124,9 @@ def get_setting_type(row):
     if 'PSYH' in codes:
         return 'Psychiatric Hospital'
     
-    if has_code(codes, LOC_INDICATORS['HOSPITAL_INPATIENT']):
-        if ' HI ' in f" {codes} " or codes.startswith('HI ') or codes.endswith(' HI'):
-            return 'Hospital Inpatient'
+    # Use regex for HI detection (word boundary)
+    if re.search(r'\bHI\b', codes):
+        return 'Hospital Inpatient'
     
     has_residential = has_code(codes, LOC_INDICATORS['RESIDENTIAL'])
     has_detox = has_code(codes, LOC_INDICATORS['DETOX'])
@@ -295,20 +295,24 @@ st.sidebar.number_input("Display Row Count", key="max_show", min_value=1, step=1
 # Start with all data
 d_work = d.copy()
 
-# Filter by setting type
-setting_patterns = []
+# Build list of allowed setting types (OR logic)
+allowed_settings = set()
 if inc_psych_hosp:
-    d_work = d_work[d_work['setting_type'] == 'Psychiatric Hospital']
+    allowed_settings.add('Psychiatric Hospital')
 if inc_hosp_inpt:
-    d_work = d_work[d_work['setting_type'].str.contains('Hospital Inpatient', na=False) | 
-                    (d_work['setting_type'] == 'Hospital Inpatient')]
+    allowed_settings.add('Hospital Inpatient')
 if inc_residential:
-    d_work = d_work[d_work['setting_type'].str.contains('Residential', na=False)]
+    allowed_settings.add('Residential')
+    allowed_settings.add('Residential + Detox')
 if inc_detox:
-    d_work = d_work[d_work['setting_type'].str.contains('Detox', na=False)]
+    allowed_settings.add('Detox Only')
+    allowed_settings.add('Residential + Detox')
 
-# If no settings selected, filter to at least non-outpatient
-if not any([inc_psych_hosp, inc_hosp_inpt, inc_residential, inc_detox]):
+# Filter by setting type
+if allowed_settings:
+    d_work = d_work[d_work['setting_type'].isin(allowed_settings)]
+else:
+    # If no settings selected, show all non-outpatient
     d_work = d_work[d_work['setting_type'] != 'Outpatient']
 
 count_setting = len(d_work)
@@ -453,24 +457,60 @@ with st.expander("📊 View Summary Statistics"):
     
     with col1:
         st.markdown("**Setting Type Distribution**")
-        st.dataframe(
-            display_df['setting_type'].value_counts().reset_index()
-            .rename(columns={'setting_type': 'Setting Type', 'count': 'Count'}),
-            hide_index=True,
-            use_container_width=True
-        )
+        if len(display_df) > 0:
+            st.dataframe(
+                display_df['setting_type'].value_counts().reset_index()
+                .rename(columns={'setting_type': 'Setting Type', 'count': 'Count'}),
+                hide_index=True,
+                use_container_width=True
+            )
+        else:
+            st.info("No facilities to display")
     
     with col2:
         st.markdown("**Top States**")
-        st.dataframe(
-            display_df['state_clean'].value_counts().head(10).reset_index()
-            .rename(columns={'state_clean': 'State', 'count': 'Count'}),
-            hide_index=True,
-            use_container_width=True
-        )
+        if len(display_df) > 0:
+            st.dataframe(
+                display_df['state_clean'].value_counts().head(10).reset_index()
+                .rename(columns={'state_clean': 'State', 'count': 'Count'}),
+                hide_index=True,
+                use_container_width=True
+            )
+        else:
+            st.info("No facilities to display")
     
-    st.markdown("**Score Distribution**")
-    col3, col4, col5 = st.columns(3)
-    col3.metric("Mean Score", f"{display_df['propensity_score'].mean():.1f}")
-    col4.metric("Median Score", f"{display_df['propensity_score'].median():.1f}")
-    col5.metric("Score Range", f"{display_df['propensity_score'].min():.0f} - {display_df['propensity_score'].max():.0f}")
+    if len(display_df) > 0:
+        st.markdown("**Score Distribution**")
+        col3, col4, col5 = st.columns(3)
+        col3.metric("Mean Score", f"{display_df['propensity_score'].mean():.1f}")
+        col4.metric("Median Score", f"{display_df['propensity_score'].median():.1f}")
+        col5.metric("Score Range", f"{display_df['propensity_score'].min():.0f} - {display_df['propensity_score'].max():.0f}")
+
+with st.expander("🔍 Debug Info - Data Quality Check"):
+    st.markdown("**All Unique Setting Types in Data**")
+    all_settings = d['setting_type'].value_counts().reset_index()
+    st.dataframe(all_settings.rename(columns={'setting_type': 'Setting Type', 'count': 'Count'}), hide_index=True)
+    
+    st.markdown("**Score Distribution (All Data)**")
+    col_d1, col_d2, col_d3 = st.columns(3)
+    col_d1.metric("Mean LOC", f"{d['loc_score'].mean():.1f}")
+    col_d2.metric("Mean Clinical", f"{d['sophistication_score'].mean():.1f}")
+    col_d3.metric("Mean Acuity", f"{d['acuity_score'].mean():.1f}")
+    
+    st.markdown("**Currently Selected Settings**")
+    selected = []
+    if inc_psych_hosp: selected.append("Psychiatric Hospital")
+    if inc_hosp_inpt: selected.append("Hospital Inpatient")
+    if inc_residential: selected.append("Residential/Residential + Detox")
+    if inc_detox: selected.append("Detox Only/Residential + Detox")
+    st.write(selected if selected else "None (showing all non-outpatient)")
+    
+    st.markdown("**Active Filters**")
+    st.write(f"- Min LOC Score: {min_loc}")
+    st.write(f"- Min Clinical Score: {min_clinical}")
+    st.write(f"- Min Acuity Score: {min_acuity}")
+    st.write(f"- Min Total Score: {min_total_score}")
+    st.write(f"- Exclude Government: {exclude_govt}")
+    st.write(f"- Require Co-occurring: {require_cooccurring}")
+    st.write(f"- Require MAT: {require_mat}")
+    st.write(f"- Require SMI: {require_smi}")
