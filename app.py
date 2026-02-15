@@ -886,6 +886,12 @@ display_df['Pillars'] = display_df.apply(
     lambda r: f"{r['loc_score']}·{r['clinical_score']}·{r['risk_score']}·{r['quality_score']}", axis=1
 )
 
+# --- Location + Phone ---
+display_df['Loc_Phone'] = display_df.apply(
+    lambda r: f"{r['Location']}  ·  {r['phone']}" if pd.notna(r.get('phone')) and str(r.get('phone', '')).strip() else r['Location'],
+    axis=1
+)
+
 # --- Rank ---
 display_df = display_df.reset_index(drop=True)
 display_df.insert(0, 'Rank', display_df.index + 1)
@@ -893,10 +899,11 @@ display_df.insert(0, 'Rank', display_df.index + 1)
 # --- Table ---
 st.dataframe(
     display_df[[
-        'Rank', 'name1', 'Location', 'setting_type',
+        'Rank', 'name1', 'Loc_Phone', 'setting_type',
         'score', 'Pillars', 'Gaps', 'Confidence',
     ]].rename(columns={
         'name1': 'Facility Name',
+        'Loc_Phone': 'Location / Phone',
         'setting_type': 'Setting',
         'score': 'Score',
         'Pillars': 'L·C·R·Q',
@@ -906,14 +913,27 @@ st.dataframe(
     hide_index=True,
     column_config={
         "Rank": st.column_config.NumberColumn("Rank", width=55),
-        "Facility Name": st.column_config.TextColumn("Facility Name", width=260),
-        "Location": st.column_config.TextColumn("Location", width=170),
-        "Setting": st.column_config.TextColumn("Setting", width=170),
+        "Facility Name": st.column_config.TextColumn("Facility Name", width=240),
+        "Location / Phone": st.column_config.TextColumn("Location / Phone", width=230,
+            help="City, State and facility main phone number (typically intake/front desk)"),
+        "Setting": st.column_config.TextColumn("Setting", width=155),
         "Score": st.column_config.ProgressColumn("Score", format="%d", min_value=0, max_value=100, width=75),
-        "L·C·R·Q": st.column_config.TextColumn("L·C·R·Q", width=95,
+        "L·C·R·Q": st.column_config.TextColumn("L·C·R·Q", width=90,
             help="Level of Care · Clinical Complexity · Sentinel Risk · Institutional Quality"),
-        "Gaps": st.column_config.TextColumn("Missing", width=190),
-        "Confidence": st.column_config.TextColumn("Data", width=70),
+        "Gaps": st.column_config.TextColumn("Missing", width=175,
+            help="MAT = No medication-assisted therapy\n"
+                 "MAT↑ = Has MAT but limited (<3 meds)\n"
+                 "AP = No antipsychotic medications\n"
+                 "Adv Tx = No advanced therapies (DBT, EMDR, ECT, TMS, KIT)\n"
+                 "COD = No co-occurring disorder treatment\n"
+                 "SMI = No serious mental illness programs\n"
+                 "SPS = No suicide prevention services\n"
+                 "DTX = No detox capabilities\n"
+                 "Crisis = No crisis services\n"
+                 "Accred = No JC or CARF accreditation\n"
+                 "— = No gaps (full capability profile)"),
+        "Confidence": st.column_config.TextColumn("Data", width=70,
+            help="Confidence in scored data: ✓ ≥90% explicit codes, ~ 75-89% some inference, ⚠ <75% significant inference — verify during outreach"),
     }
 )
 
@@ -1016,9 +1036,26 @@ with st.expander(f"📊 Summary Statistics — {count_filtered:,} filtered facil
 
 # --- Download (bottom of page) ---
 showing_label = f"top {len(display_df)}" if len(display_df) < count_filtered else "all"
+
+# Curate CSV columns — phone gets its own column, clean structure for CRM import
+csv_df = display_df[[
+    'Rank', 'name1', 'city_clean', 'state_clean', 'phone',
+    'setting_type', 'score', 'loc_score', 'clinical_score', 'risk_score', 'quality_score',
+    'Gaps', 'data_confidence', 'mat_count', 'antipsych_count', 'adv_therapy_count',
+    'Facility_Type',
+]].rename(columns={
+    'name1': 'Facility Name', 'city_clean': 'City', 'state_clean': 'State',
+    'phone': 'Phone', 'setting_type': 'Setting', 'score': 'Total Score',
+    'loc_score': 'LOC Score', 'clinical_score': 'Clinical Score',
+    'risk_score': 'Risk Score', 'quality_score': 'Quality Score',
+    'Gaps': 'Missing Capabilities', 'data_confidence': 'Data Confidence %',
+    'mat_count': 'MAT Med Count', 'antipsych_count': 'Antipsychotic Count',
+    'adv_therapy_count': 'Adv Therapy Count', 'Facility_Type': 'Facility Type (SUD/MH)',
+})
+
 st.download_button(
     f"📥 Download Current View — {len(display_df):,} facilities ({showing_label})",
-    display_df.to_csv(index=False).encode('utf-8'),
+    csv_df.to_csv(index=False).encode('utf-8'),
     "rounding_targets.csv",
     mime="text/csv",
 )
