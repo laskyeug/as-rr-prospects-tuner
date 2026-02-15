@@ -819,13 +819,13 @@ st.markdown(
 # --- Funnel Metrics (tighter spacing, ties+button on same row) ---
 c1, c2, c3, c4, c5, c6, c7 = st.columns([1, 1, 1, 1, 1, 0.6, 0.8])
 c1.metric("Raw Records", f"{total_raw:,}", help="Total rows in SAMHSA dataset (SUD + MH)")
-c2.metric("Locations", f"{count_unique:,}", delta=f"−{total_raw - count_unique:,}", delta_color="off",
+c2.metric("Locations", f"{count_unique:,}", delta=-(total_raw - count_unique), delta_color="normal",
           help="Deduplicated by facility name + city + state. SUD & MH entries at the same location are merged.")
-c3.metric("Setting Fit", f"{count_setting:,}", delta=f"−{count_unique - count_setting:,}", delta_color="off",
+c3.metric("Setting Fit", f"{count_setting:,}", delta=-(count_unique - count_setting), delta_color="normal",
           help="Filtered to selected care settings (sidebar). Outpatient-only facilities excluded.")
-c4.metric("Score Fit", f"{count_scored:,}", delta=f"−{count_setting - count_scored:,}", delta_color="off",
+c4.metric("Score Fit", f"{count_scored:,}", delta=-(count_setting - count_scored), delta_color="normal",
           help="Filtered by minimum score thresholds (Total, LOC, Clinical, Risk, Quality sliders).")
-c5.metric("Qualified", f"{count_final:,}", delta=f"−{count_scored - count_final:,}", delta_color="off",
+c5.metric("Qualified", f"{count_final:,}", delta=-(count_scored - count_final), delta_color="normal",
           help="After applying treatment requirements (COD, MAT, SMI), accreditation filter, and government exclusion.")
 
 st.markdown('<hr style="margin:0.2rem 0;">', unsafe_allow_html=True)
