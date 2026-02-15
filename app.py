@@ -453,14 +453,14 @@ def confidence_label(conf):
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 9. DATA LOADING & SCORING PIPELINE
+# 9. DATA LOADING (cached) & SCORING (live)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @st.cache_data(ttl=3600)
-def load_and_score():
-    """Load SAMHSA data from Google Sheets, dedup, and score all facilities."""
+def load_data():
+    """Load SAMHSA data from Google Sheets, dedup, and extract features.
+    Scoring is done separately so weight changes don't require re-fetching."""
 
-    # --- Connect ---
     scope = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
     creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
     client = gspread.authorize(creds)
@@ -471,11 +471,11 @@ def load_and_score():
         raw['orig_row'] = raw.index + 2
         total_raw = len(raw)
 
-        # --- Clean ---
+        # Clean
         raw['city_clean'] = raw['city'].fillna('').astype(str).str.title()
         raw['state_clean'] = raw['state'].fillna('').astype(str).str.upper()
 
-        # --- Dedup by name + city + state, MERGE service codes first ---
+        # Dedup by name + city + state, MERGE service codes
         rollup = raw.groupby(['name1', 'city_clean', 'state_clean'], as_index=False).agg({
             'service_code_info': merge_tags,
             'phone': 'first',
@@ -485,68 +485,32 @@ def load_and_score():
             'Facility_Type': lambda x: ' & '.join(sorted(set(x.dropna().astype(str)))),
         })
 
-        # --- Classify AFTER merging (merged codes may upgrade a setting) ---
+        # Classify AFTER merging
         rollup['setting_type'] = rollup['service_code_info'].apply(classify_setting)
 
-        # --- Government flag ---
+        # Flags (weight-independent)
         rollup['is_govt'] = rollup['service_code_info'].apply(lambda x: has_code(x, GOVT_CODES))
-
-        # --- Ownership ---
         rollup['is_for_profit'] = rollup['service_code_info'].apply(lambda x: has_code(x, OWNERSHIP_CODES['FOR_PROFIT']))
         rollup['is_non_profit'] = rollup['service_code_info'].apply(lambda x: has_code(x, OWNERSHIP_CODES['NON_PROFIT']))
-
-        # --- Score all four pillars ---
-        w = DEFAULT_WEIGHTS
-
-        # Pillar 1: Level of Care
-        rollup['loc_score'] = rollup['setting_type'].apply(lambda s: score_level_of_care(s, w))
-
-        # Pillar 2: Clinical Complexity
-        clinical_results = rollup['service_code_info'].apply(lambda c: score_clinical_complexity(c, w))
-        rollup['clinical_score'] = clinical_results.apply(lambda x: x[0])
-        rollup['mat_count'] = clinical_results.apply(lambda x: x[1])
-        rollup['antipsych_count'] = clinical_results.apply(lambda x: x[2])
-        rollup['adv_therapy_count'] = clinical_results.apply(lambda x: x[3])
-
-        # Pillar 3: Sentinel Event Risk (with fuzzy inference)
-        risk_results = rollup.apply(
-            lambda row: score_sentinel_risk(
-                row['service_code_info'], row['setting_type'],
-                row['Facility_Type'], row['antipsych_count'], w
-            ), axis=1, result_type='expand'
-        )
-        rollup['risk_score'] = risk_results[0]
-        rollup['inferred_penalty'] = risk_results[1]
-        rollup['has_smi'] = risk_results[2]
-        rollup['smi_source'] = risk_results[3]
-        rollup['has_sps'] = risk_results[4]
-        rollup['sps_source'] = risk_results[5]
-        rollup['has_crisis'] = risk_results[6]
-        rollup['crisis_source'] = risk_results[7]
-
-        # Pillar 4: Institutional Quality
-        rollup['quality_score'] = rollup['service_code_info'].apply(lambda c: score_institutional_quality(c, w))
-
-        # --- Composite ---
-        rollup['score'] = (
-            rollup['loc_score'] +
-            rollup['clinical_score'] +
-            rollup['risk_score'] +
-            rollup['quality_score']
-        ).clip(upper=100).astype(int)
-
-        # --- Confidence ---
-        rollup['data_confidence'] = rollup['inferred_penalty'].apply(confidence_score)
-
-        # --- Derived flags for filtering ---
         rollup['has_cooccurring'] = rollup['service_code_info'].apply(lambda x: has_code(x, ACUITY_CODES['COOCCURRING']))
-        rollup['has_mat'] = rollup['mat_count'] > 0
         rollup['has_detox'] = rollup['service_code_info'].apply(lambda x: has_code(x, ACUITY_CODES['DETOX']))
         rollup['has_jc'] = rollup['service_code_info'].apply(lambda x: has_code_wb(x, 'JC'))
         rollup['has_carf'] = rollup['service_code_info'].apply(lambda x: has_code(x, QUALITY_CODES['CARF']))
         rollup['has_accreditation'] = rollup['has_jc'] | rollup['has_carf']
 
-        # --- Location ---
+        # Raw feature counts (weight-independent)
+        rollup['mat_count'] = rollup['service_code_info'].apply(lambda x: count_codes(x, MAT_MEDICATIONS))
+        rollup['has_mat'] = rollup['mat_count'] > 0
+        rollup['antipsych_count'] = rollup['service_code_info'].apply(lambda x: count_codes(x, ANTIPSYCHOTICS))
+        rollup['adv_therapy_count'] = rollup['service_code_info'].apply(
+            lambda c: sum(1 for t in ADVANCED_THERAPIES if (
+                re.search(rf'\b{t}\b', str(c).upper()) if len(t) <= 3 else t in str(c).upper()
+            ))
+        )
+        rollup['has_mmd'] = rollup['service_code_info'].apply(lambda x: has_code_wb(x, 'MMD'))
+        rollup['has_pefp'] = rollup['service_code_info'].apply(lambda x: has_code(x, ACUITY_CODES['FIRST_EPISODE_PSYCHOSIS']))
+
+        # Location
         rollup['Location'] = rollup.apply(
             lambda x: f"{x['city_clean']}, {x['state_clean']}" if x['city_clean'] else x['state_clean'],
             axis=1
@@ -559,9 +523,95 @@ def load_and_score():
         st.stop()
 
 
-# --- Load ---
-d, total_raw = load_and_score()
-count_unique = len(d)
+def score_data(df, w):
+    """Apply scoring using current weights. Called on every rerun (fast — no I/O)."""
+    d = df.copy()
+
+    # Pillar 1: Level of Care
+    d['loc_score'] = d['setting_type'].apply(lambda s: score_level_of_care(s, w))
+
+    # Pillar 2: Clinical Complexity
+    def calc_clinical(row):
+        c = str(row['service_code_info']).upper()
+        mat_n = row['mat_count']
+        mat_s = w['mat_none'] if mat_n == 0 else (w['mat_basic'] if mat_n <= 2 else (w['mat_standard'] if mat_n <= 4 else w['mat_comprehensive']))
+        ap_n = row['antipsych_count']
+        ap_s = w['antipsych_none'] if ap_n == 0 else (w['antipsych_basic'] if ap_n <= 4 else (w['antipsych_moderate'] if ap_n <= 9 else w['antipsych_broad']))
+        adv_s = min(6, row['adv_therapy_count'] * w['advanced_therapy_each'])
+        mmd_s = w['med_management'] if row['has_mmd'] else 0
+        return min(PILLAR_CAPS['clinical'], mat_s + ap_s + adv_s + mmd_s)
+
+    d['clinical_score'] = d.apply(calc_clinical, axis=1)
+
+    # Pillar 3: Sentinel Event Risk (with fuzzy inference)
+    def calc_risk(row):
+        c = str(row['service_code_info']).upper()
+        setting = row['setting_type']
+        score = 0
+        inferred_penalty = 0
+
+        if row['has_cooccurring']:
+            score += w['risk_cooccurring']
+
+        has_smi, smi_src, smi_pen = infer_smi(c, setting, row['Facility_Type'], row['antipsych_count'])
+        if has_smi:
+            score += w['risk_smi']
+            inferred_penalty += smi_pen
+
+        has_sps, sps_src, sps_pen = infer_suicide_prevention(c, setting, has_smi)
+        if has_sps:
+            score += w['risk_suicide_prevention']
+            inferred_penalty += sps_pen
+
+        if row['has_detox']:
+            score += w['risk_detox']
+
+        has_crisis, crisis_src, crisis_pen = infer_crisis(c, setting)
+        if has_crisis:
+            score += w['risk_crisis']
+            inferred_penalty += crisis_pen
+
+        if row['has_pefp']:
+            score += w['risk_first_episode']
+
+        capped = min(PILLAR_CAPS['risk'], score)
+        return pd.Series({
+            'risk_score': capped, 'inferred_penalty': inferred_penalty,
+            'has_smi': has_smi, 'smi_source': smi_src,
+            'has_sps': has_sps, 'sps_source': sps_src,
+            'has_crisis': has_crisis, 'crisis_source': crisis_src,
+        })
+
+    risk_results = d.apply(calc_risk, axis=1)
+    for col in risk_results.columns:
+        d[col] = risk_results[col]
+
+    # Pillar 4: Institutional Quality
+    def calc_quality(row):
+        c = str(row['service_code_info']).upper()
+        score = 0
+        if row['has_jc']: score += w['quality_jc']
+        if row['has_carf']: score += w['quality_carf']
+        if has_code_wb(c, 'NOE'): score += w['quality_noe']
+        if has_code_wb(c, 'DP'): score += w['quality_discharge']
+        if has_code_wb(c, 'OFD'): score += w['quality_followup']
+        if has_code_wb(c, 'MST') or has_code_wb(c, 'IPC') or 'LABT' in c:
+            score += w['quality_monitoring']
+        return min(PILLAR_CAPS['quality'], score)
+
+    d['quality_score'] = d.apply(calc_quality, axis=1)
+
+    # Composite
+    d['score'] = (d['loc_score'] + d['clinical_score'] + d['risk_score'] + d['quality_score']).clip(upper=100).astype(int)
+
+    # Confidence
+    d['data_confidence'] = d['inferred_penalty'].apply(confidence_score)
+
+    return d
+
+
+# --- Load (cached) then Score (live) ---
+raw_data, total_raw = load_data()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -615,23 +665,81 @@ exclude_govt = st.sidebar.toggle("Exclude Government Facilities", value=True)
 st.sidebar.divider()
 st.sidebar.number_input("Display Row Count", key="max_show", min_value=1, step=1)
 
-# --- Advanced Info (collapsed) ---
-with st.sidebar.expander("⚙️ Advanced — Scoring Weights", expanded=False):
-    st.markdown("""
-**Level of Care** (0-30)  
-Psych Hospital 30 · Inpt Psych 28 · Hospital 25 · RTC 22 · Res+Dtx 20 · Res 17 · Detox 14
+# --- Adjustable Scoring Weights (collapsed) ---
+with st.sidebar.expander("⚙️ Scoring Weights", expanded=False):
+    st.caption("Adjust how much each signal contributes to the total score. Changes take effect immediately.")
 
-**Clinical Complexity** (0-30)  
-MAT: 0/6/10/14 · Antipsych: 0/3/5/7 · Adv Therapy: 2ea (cap 6) · MMD: 3
+    st.markdown("**Level of Care** (max 30)")
+    w_loc_psych = st.number_input("Psych Hospital", 0, 30, DEFAULT_WEIGHTS['loc_psych_hospital'], 1, key="w_lp")
+    w_loc_ipsy = st.number_input("Inpatient Psych Unit", 0, 30, DEFAULT_WEIGHTS['loc_inpatient_psych'], 1, key="w_li")
+    w_loc_hosp = st.number_input("Hospital Inpatient", 0, 30, DEFAULT_WEIGHTS['loc_hospital_inpatient'], 1, key="w_lh")
+    w_loc_rtc = st.number_input("Residential Tx Center", 0, 30, DEFAULT_WEIGHTS['loc_rtc'], 1, key="w_lr")
+    w_loc_resdtx = st.number_input("Residential + Detox", 0, 30, DEFAULT_WEIGHTS['loc_residential_detox'], 1, key="w_lrd")
+    w_loc_res = st.number_input("Residential", 0, 30, DEFAULT_WEIGHTS['loc_residential'], 1, key="w_lre")
+    w_loc_dtx = st.number_input("Detox Only", 0, 30, DEFAULT_WEIGHTS['loc_detox_only'], 1, key="w_ld")
 
-**Sentinel Event Risk** (0-25)  
-COD 6 · SMI 5 · SPS 5 · Detox 4 · Crisis 3 · PEFP 2
+    st.markdown("**Clinical Complexity** (max 30)")
+    w_mat_b = st.number_input("MAT Basic (1-2 meds)", 0, 30, DEFAULT_WEIGHTS['mat_basic'], 1, key="w_mb")
+    w_mat_s = st.number_input("MAT Standard (3-4)", 0, 30, DEFAULT_WEIGHTS['mat_standard'], 1, key="w_ms")
+    w_mat_c = st.number_input("MAT Comprehensive (5+)", 0, 30, DEFAULT_WEIGHTS['mat_comprehensive'], 1, key="w_mc")
+    w_ap_b = st.number_input("Antipsych Basic (1-4)", 0, 30, DEFAULT_WEIGHTS['antipsych_basic'], 1, key="w_ab")
+    w_ap_m = st.number_input("Antipsych Moderate (5-9)", 0, 30, DEFAULT_WEIGHTS['antipsych_moderate'], 1, key="w_am")
+    w_ap_br = st.number_input("Antipsych Broad (10+)", 0, 30, DEFAULT_WEIGHTS['antipsych_broad'], 1, key="w_abr")
+    w_adv = st.number_input("Adv Therapy (each, cap 6)", 0, 6, DEFAULT_WEIGHTS['advanced_therapy_each'], 1, key="w_adv")
+    w_mmd = st.number_input("Med Management (MMD)", 0, 10, DEFAULT_WEIGHTS['med_management'], 1, key="w_mmd")
 
-**Institutional Quality** (0-15)  
-JC 5 · CARF 3 · NOE 2 · DP 2 · Monitoring 2 · OFD 1
-    """)
-    st.caption("Weights are configured in code. Contact dev to adjust.")
+    st.markdown("**Sentinel Event Risk** (max 25)")
+    w_cod = st.number_input("Co-Occurring (COD)", 0, 25, DEFAULT_WEIGHTS['risk_cooccurring'], 1, key="w_cod")
+    w_smi = st.number_input("SMI", 0, 25, DEFAULT_WEIGHTS['risk_smi'], 1, key="w_smi")
+    w_sps = st.number_input("Suicide Prevention", 0, 25, DEFAULT_WEIGHTS['risk_suicide_prevention'], 1, key="w_sps")
+    w_dtx = st.number_input("Detox", 0, 25, DEFAULT_WEIGHTS['risk_detox'], 1, key="w_dtx")
+    w_cri = st.number_input("Crisis Services", 0, 25, DEFAULT_WEIGHTS['risk_crisis'], 1, key="w_cri")
+    w_pefp = st.number_input("First-Episode Psychosis", 0, 25, DEFAULT_WEIGHTS['risk_first_episode'], 1, key="w_pefp")
 
+    st.markdown("**Institutional Quality** (max 15)")
+    w_jc = st.number_input("Joint Commission", 0, 15, DEFAULT_WEIGHTS['quality_jc'], 1, key="w_jc")
+    w_carf = st.number_input("CARF", 0, 15, DEFAULT_WEIGHTS['quality_carf'], 1, key="w_carf")
+    w_noe = st.number_input("Naloxone/OD Ed", 0, 15, DEFAULT_WEIGHTS['quality_noe'], 1, key="w_noe")
+    w_dp = st.number_input("Discharge Planning", 0, 15, DEFAULT_WEIGHTS['quality_discharge'], 1, key="w_dp")
+    w_mon = st.number_input("Medical Monitoring", 0, 15, DEFAULT_WEIGHTS['quality_monitoring'], 1, key="w_mon")
+    w_ofd = st.number_input("Outcome Follow-up", 0, 15, DEFAULT_WEIGHTS['quality_followup'], 1, key="w_ofd")
+
+# --- Build active weights dict from sidebar inputs ---
+active_weights = {
+    'loc_psych_hospital': w_loc_psych,
+    'loc_inpatient_psych': w_loc_ipsy,
+    'loc_hospital_inpatient': w_loc_hosp,
+    'loc_rtc': w_loc_rtc,
+    'loc_residential_detox': w_loc_resdtx,
+    'loc_residential': w_loc_res,
+    'loc_detox_only': w_loc_dtx,
+    'mat_none': 0,
+    'mat_basic': w_mat_b,
+    'mat_standard': w_mat_s,
+    'mat_comprehensive': w_mat_c,
+    'antipsych_none': 0,
+    'antipsych_basic': w_ap_b,
+    'antipsych_moderate': w_ap_m,
+    'antipsych_broad': w_ap_br,
+    'advanced_therapy_each': w_adv,
+    'med_management': w_mmd,
+    'risk_cooccurring': w_cod,
+    'risk_smi': w_smi,
+    'risk_suicide_prevention': w_sps,
+    'risk_detox': w_dtx,
+    'risk_crisis': w_cri,
+    'risk_first_episode': w_pefp,
+    'quality_jc': w_jc,
+    'quality_carf': w_carf,
+    'quality_noe': w_noe,
+    'quality_discharge': w_dp,
+    'quality_monitoring': w_mon,
+    'quality_followup': w_ofd,
+}
+
+# --- Score data with active weights ---
+d = score_data(raw_data, active_weights)
+count_unique = len(d)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 11. FILTERING ENGINE
@@ -812,17 +920,17 @@ st.markdown(
 
 with st.expander("ℹ️ Scoring Model"):
     st.markdown("""
-**Four-pillar model (0–100 total)**
+**Four-pillar model (0–100 total)** — weights adjustable in sidebar ⚙️
 
 | Pillar | Max | Key Signals |
 |--------|-----|-------------|
-| **Level of Care** | 30 | Psych Hospital (30) → Inpatient Psych (28) → Hospital (25) → RTC (22) → Res+Detox (20) → Res (17) → Detox (14) |
-| **Clinical Complexity** | 30 | MAT tier (0/6/10/14) + Antipsychotic breadth (0/3/5/7) + Advanced therapies (DBT, EMDR, ECT, TMS, KIT — 2ea, cap 6) + MMD (3) |
-| **Sentinel Event Risk** | 25 | Co-occurring (6) + SMI (5) + Suicide Prevention (5) + Detox (4) + Crisis (3) + First-Episode Psychosis (2) |
-| **Institutional Quality** | 15 | Joint Commission (5) + CARF (3) + Naloxone/OD Ed (2) + Discharge Planning (2) + Outcome Follow-up (1) + Medical Monitoring (2) |
+| **Level of Care** | 30 | Psych Hospital → Inpatient Psych → Hospital → RTC → Res+Detox → Res → Detox |
+| **Clinical Complexity** | 30 | MAT tier + Antipsychotic breadth + Advanced therapies (DBT, EMDR, ECT, TMS, KIT) + MMD |
+| **Sentinel Event Risk** | 25 | Co-occurring + SMI + Suicide Prevention + Detox + Crisis + First-Episode Psychosis |
+| **Institutional Quality** | 15 | Joint Commission + CARF + Naloxone/OD Ed + Discharge Planning + Outcome Follow-up + Medical Monitoring |
 
 **Fuzzy Inference** (when SAMHSA data is incomplete):
-- Psych hospitals → assumed SMI, Crisis, Suicide Prevention capabilities
+- Psych hospitals → assumed SMI, Crisis, Suicide Prevention
 - Inpatient psych units → assumed SMI, Crisis
 - Hospital + co-occurring → assumed SMI
 - 5+ antipsychotics prescribed → assumed SMI
