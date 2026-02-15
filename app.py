@@ -179,11 +179,11 @@ states = c_state.multiselect("📍 State", options=sorted(d['state_clean'].uniqu
 if search: display_df = display_df[display_df['name1'].str.lower().str.contains(search)]
 if states: display_df = display_df[display_df['state_clean'].isin(states)]
 
-# --- ADD RANK COLUMN ---
-# This re-indexes based on current sort so Rank 1 is always the top visible record
+# Rank Column Logic
 display_df = display_df.reset_index(drop=True)
 display_df.insert(0, 'Rank', display_df.index + 1)
 
+# Final Table Rendering with Column Width Constraints
 st.dataframe(
     display_df[['Rank', 'name1', 'Location', 'phone', 'Propensity Score', 'orig_row']].rename(
         columns={
@@ -196,8 +196,15 @@ st.dataframe(
     height=550, 
     hide_index=True, 
     column_config={
-        "Rank": st.column_config.NumberColumn("Rank", width="small"),
-        "Propensity Score": st.column_config.ProgressColumn("Propensity", format="%d", min_value=0, max_value=100)
+        "Rank": st.column_config.NumberColumn("Rank", width=40), # Aggressively narrowed
+        "Propensity Score": st.column_config.ProgressColumn(
+            "Propensity", 
+            format="%d", 
+            min_value=0, 
+            max_value=100,
+            width=80 # Aggressively narrowed
+        ),
+        "Source Row(s)": st.column_config.TextColumn("Source Row(s)", width=200) # Widened
     }
 )
 
