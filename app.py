@@ -22,7 +22,7 @@ st.markdown("""
 if 'max_show' not in st.session_state:
     st.session_state.max_show = 100
 
-# --- 3. DATA LOADING & DEFINITIONS ---
+# --- 3. DATA LOADING ---
 INFRA_CODES = {'HI', 'PSYH', 'RES', 'RL', 'RS', 'DT', 'ADTX', 'ODTX', 'BDTX', 'CDTX', 'MDTX', 'SUMH', 'MH', 'SA', 'OTP'}
 CLINICAL_CODES = {'METH', 'NXN', 'VTRL', 'LABT', 'MM', 'MSRV', 'UB', 'BERI', 'GH', 'CO', 'VET', 'ADM', 'PW', 'SE'}
 STANDARD_CODES = {'OP', 'IOP', 'PH', 'CBT', 'DBT', 'MI', 'ANG', 'REL', 'TRC', 'SAE', 'TCC', 'CM', 'SS', 'TA'}
@@ -82,14 +82,15 @@ with st.sidebar.expander("Care Types (Include)", expanded=True):
     inc_hosp = st.checkbox("Hospital / Inpatient", value=True)
 
 st.sidebar.subheader("Importance Weights (%)")
+# Weights are now purely for SCORING (Math)
 w_infra = st.sidebar.slider("Infrastructure Breadth", 0, 100, 50)
-st.sidebar.markdown('<div class="slider-label-row"><span>No Req.</span><span>Mandatory</span></div>', unsafe_allow_html=True)
+st.sidebar.markdown('<div class="slider-label-row"><span>Lower Weight</span><span>Higher Weight</span></div>', unsafe_allow_html=True)
 
 w_clin = st.sidebar.slider("Clinical Depth", 0, 100, 30)
-st.sidebar.markdown('<div class="slider-label-row"><span>No Req.</span><span>Mandatory</span></div>', unsafe_allow_html=True)
+st.sidebar.markdown('<div class="slider-label-row"><span>Lower Weight</span><span>Higher Weight</span></div>', unsafe_allow_html=True)
 
 w_std = st.sidebar.slider("Services Offered", 0, 100, 20)
-st.sidebar.markdown('<div class="slider-label-row"><span>No Req.</span><span>Mandatory</span></div>', unsafe_allow_html=True)
+st.sidebar.markdown('<div class="slider-label-row"><span>Lower Weight</span><span>Higher Weight</span></div>', unsafe_allow_html=True)
 
 st.sidebar.divider()
 exclude_non_priv = st.sidebar.toggle("Exclude Explicit Non-Private", value=True)
@@ -99,6 +100,7 @@ min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
 st.sidebar.number_input("Download Size (Rows)", key="max_show", min_value=1, step=1)
 
 # --- 5. SCORING ENGINE ---
+# Normalize breadth scores (0-100)
 i_max = d['n_infra'].max() if d['n_infra'].max() > 0 else 1
 c_max = d['n_clinical'].max() if d['n_clinical'].max() > 0 else 1
 s_max = d['n_standard'].max() if d['n_standard'].max() > 0 else 1
@@ -107,11 +109,13 @@ d['score_infra'] = (d['n_infra'] / i_max) * 100
 d['score_clin'] = (d['n_clinical'] / c_max) * 100
 d['score_std'] = (d['n_standard'] / s_max) * 100
 
-# Fuzzy Judgment
+# Fuzzy Bonuses
 d['fuzzy_score'] = 0
 d.loc[(d['n_infra'] > 2) & (d['has_detox']) & (d['n_mat'] > 0), 'fuzzy_score'] += 20
 d.loc[(d['n_infra'] > 1) & (d['has_stepdown']), 'fuzzy_score'] += 10
 
+# Final Propensity Score calculation
+# These sliders no longer filter—they only impact the average
 d['Raw_Score'] = (d['score_infra'] * (w_infra/100)) + (d['score_clin'] * (w_clin/100)) + (d['score_std'] * (w_std/100)) + d['fuzzy_score']
 final_max = d['Raw_Score'].max() if d['Raw_Score'].max() > 0 else 1
 d['Propensity Score'] = ((d['Raw_Score'] / final_max) * 100).round(0).astype(int)
@@ -123,19 +127,15 @@ if inc_res: patterns.append("RES|RL|RS")
 if inc_dtx: patterns.append("DT")
 if inc_hosp: patterns.append("HI|PSY")
 
+# 1. Care Type Fit (Deterministic)
 d_work = d[d['service_code_info'].str.contains("|".join(patterns), case=False, na=False)] if patterns else d
 count_services = len(d_work)
 
-# APPLYING THE "REQUIREMENT" LOGIC
-# If a slider is > 0, the facility MUST have at least 1 tag in that category to pass
-d_scored = d_work[
-    (d_work['Propensity Score'] >= min_propensity) &
-    ((w_infra == 0) | (d_work['n_infra'] > 0)) &
-    ((w_clin == 0) | (d_work['n_clinical'] > 0)) &
-    ((w_std == 0) | (d_work['n_standard'] > 0))
-]
+# 2. Score Fit (Heuristic) - This is where the Min. Score Threshold bouncer lives
+d_scored = d_work[d_work['Propensity Score'] >= min_propensity]
 count_scored = len(d_scored)
 
+# 3. Total Qualified (Ownership Cut)
 d_final = d_scored.copy()
 if exclude_non_priv:
     d_final = d_final[~(d_final['is_govt'] | d_final['is_np'])]
