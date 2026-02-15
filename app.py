@@ -8,13 +8,51 @@ st.set_page_config(page_title="A/S RR Tuner", layout="wide")
 
 st.markdown("""
     <style>
+    /* MAIN LAYOUT */
     .block-container {padding-top: 1rem; padding-bottom: 0rem;}
     [data-testid="stSidebar"] {width: 300px !important;}
     div[data-testid="stMetric"] {padding: 0px 0px 5px 0px;}
-    .stCheckbox {margin-bottom: -15px;}
-    .stSlider {padding-top: 10px; padding-bottom: 20px;}
     
-    /* CLEAN BUTTON STYLING */
+    /* SIDEBAR COMPACTING (20% Reduction) */
+    /* Shrink vertical gap between all elements */
+    [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+        gap: 0.2rem !important;
+    }
+    /* Tighten Headers */
+    [data-testid="stSidebar"] h1 {
+        padding-top: 0rem !important;
+        padding-bottom: 0.2rem !important;
+        font-size: 1.8rem !important; 
+    }
+    [data-testid="stSidebar"] h3 {
+        padding-top: 0.5rem !important;
+        padding-bottom: 0rem !important;
+        margin-bottom: 0rem !important;
+        font-size: 1rem !important;
+    }
+    /* Tighten Dividers */
+    [data-testid="stSidebar"] hr {
+        margin-top: 0.5rem !important;
+        margin-bottom: 0.5rem !important;
+    }
+    /* Tighten Widgets */
+    [data-testid="stSidebar"] .stCheckbox {
+        margin-top: -5px !important;
+        padding-bottom: 0px !important;
+    }
+    [data-testid="stSidebar"] .stSlider {
+        padding-top: 0px !important;
+        padding-bottom: 10px !important;
+    }
+    [data-testid="stSidebar"] .stNumberInput {
+        padding-bottom: 0px !important;
+    }
+    /* Tighten Caption */
+    [data-testid="stSidebar"] .stCaption {
+        margin-bottom: -5px !important;
+    }
+
+    /* CLEAN BUTTON STYLING (From Version B) */
     div[data-testid="column"] button {
         width: 100%;
         margin-top: -15px; 
@@ -33,7 +71,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- 2. SESSION STATE MANAGEMENT ---
-# Set the default to 100 as requested
+# Default to 100 rows
 if 'max_show' not in st.session_state:
     st.session_state.max_show = 100
 
@@ -98,7 +136,8 @@ d, total_raw = load_data()
 # --- 4. SCORING CONTROL BOARD ---
 st.sidebar.title("🎛️ Scoring Controls")
 
-with st.sidebar.expander("1. Filter Care Types (Include)", expanded=True):
+# Compact Expander
+with st.sidebar.expander("1. Care Types (Include)", expanded=True):
     inc_res = st.checkbox("Residential", value=True)
     inc_dtx = st.checkbox("Detox (DT)")
     inc_hosp = st.checkbox("Hospital / Inpatient")
@@ -106,6 +145,7 @@ with st.sidebar.expander("1. Filter Care Types (Include)", expanded=True):
 st.sidebar.divider()
 
 st.sidebar.subheader("2. Define 'Propensity'")
+# Weights
 w_infra = st.sidebar.slider("Infrastructure Weight", 1, 10, 5)
 w_priv = st.sidebar.slider("Private Ownership Bonus", 0, 20, 10)
 w_clin = st.sidebar.slider("Clinical Depth Weight", 1, 10, 3)
@@ -116,7 +156,7 @@ st.sidebar.divider()
 st.sidebar.subheader("3. Cutoff & Limits")
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
 
-# Input bound to session state, with min_value=1 to prevent 0
+# Clean State Handling (No warnings)
 st.sidebar.number_input("Download Size (Rows)", key="max_show", min_value=1, step=1)
 
 st.sidebar.divider()
@@ -168,11 +208,9 @@ count_ties = 0
 has_hidden_ties = False
 
 if count_final > current_limit:
-    # Identify the score of the LAST visible record
     cutoff_record = d_final.iloc[current_limit - 1]
     cutoff_score = cutoff_record['Propensity Score']
     
-    # Check hidden records
     hidden_records = d_final.iloc[current_limit:]
     tie_matches = hidden_records[hidden_records['Propensity Score'] == cutoff_score]
     count_ties = len(tie_matches)
