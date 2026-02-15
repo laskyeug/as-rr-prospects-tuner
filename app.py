@@ -103,7 +103,7 @@ def load_data():
 
 d, total_raw = load_data()
 
-# --- 4. SCORING CONTROL BOARD (Sidebar) ---
+# --- 4. SCORING CONTROL BOARD ---
 st.sidebar.title("🎛️ Scoring Controls")
 
 with st.sidebar.expander("Care Types (Include)", expanded=True):
@@ -111,7 +111,6 @@ with st.sidebar.expander("Care Types (Include)", expanded=True):
     inc_dtx = st.checkbox("Detox (DT)")
     inc_hosp = st.checkbox("Hospital / Inpatient")
 
-# Sliders now grouped under 'Propensity Settings'
 st.sidebar.subheader("Propensity Settings")
 w_infra = st.sidebar.slider("Infrastructure Weight", 1, 10, 5)
 w_priv = st.sidebar.slider("Private Ownership Bonus", 0, 20, 10)
@@ -119,7 +118,6 @@ w_clin = st.sidebar.slider("Clinical Depth Weight", 1, 10, 3)
 w_std = st.sidebar.slider("Standard Services Weight", 0, 5, 1)
 
 st.sidebar.divider()
-# No heading for this section as requested
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
 st.sidebar.number_input("Download Size (Rows)", key="max_show", min_value=1, step=1)
 exclude_gov = st.sidebar.toggle("Exclude Govt/VAMC", value=True)
@@ -150,14 +148,14 @@ count_ties = 0
 if count_final > current_limit:
     cutoff_score = d_final.iloc[current_limit - 1]['Propensity Score']
     count_ties = len(d_final.iloc[current_limit:][d_final.iloc[current_limit:]['Propensity Score'] == cutoff_score])
-    display_df = d_final.head(current_limit)
+    display_df = d_final.head(current_limit).copy()
 else:
-    display_df = d_final
+    display_df = d_final.copy()
 
 # --- 8. MAIN VIEW ---
 st.title("📊 Scored Prospects")
 
-# WATERFALL METRICS WITH DELTAS
+# WATERFALL METRICS
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("1. Universe", f"{total_raw:,}")
 c2.metric("2. Unique Locs", f"{count_unique:,}", delta=f"-{total_raw - count_unique:,}", delta_color="off")
@@ -173,7 +171,7 @@ if count_ties > 0:
 else:
     c6.empty()
 
-# Search and Table
+# Search
 c_search, c_state = st.columns([2, 1])
 search = c_search.text_input("🔍 Search Name").lower()
 states = c_state.multiselect("📍 State", options=sorted(d['state_clean'].unique()))
@@ -181,9 +179,13 @@ states = c_state.multiselect("📍 State", options=sorted(d['state_clean'].uniqu
 if search: display_df = display_df[display_df['name1'].str.lower().str.contains(search)]
 if states: display_df = display_df[display_df['state_clean'].isin(states)]
 
-# Table output with Index hidden and final column renamed
+# --- ADD RANK COLUMN ---
+# This re-indexes based on current sort so Rank 1 is always the top visible record
+display_df = display_df.reset_index(drop=True)
+display_df.insert(0, 'Rank', display_df.index + 1)
+
 st.dataframe(
-    display_df[['name1', 'Location', 'phone', 'Propensity Score', 'orig_row']].rename(
+    display_df[['Rank', 'name1', 'Location', 'phone', 'Propensity Score', 'orig_row']].rename(
         columns={
             'name1': 'Facility Name', 
             'phone': 'Phone', 
@@ -192,8 +194,11 @@ st.dataframe(
     ), 
     use_container_width=True, 
     height=550, 
-    hide_index=True, # Hides the unlabeled Index column
-    column_config={"Propensity Score": st.column_config.ProgressColumn("Propensity", format="%d", min_value=0, max_value=100)}
+    hide_index=True, 
+    column_config={
+        "Rank": st.column_config.NumberColumn("Rank", width="small"),
+        "Propensity Score": st.column_config.ProgressColumn("Propensity", format="%d", min_value=0, max_value=100)
+    }
 )
 
 st.download_button("📥 Download (CSV)", d_final.to_csv(index=False).encode('utf-8'), "Scored_Prospects.csv")
