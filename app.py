@@ -39,7 +39,7 @@ div[data-testid="stHorizontalBlock"] {align-items: flex-start !important;}
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 if 'max_show' not in st.session_state:
-    st.session_state.max_show = 100
+    st.session_state.max_show = 250
 if 'pending_tie_add' not in st.session_state:
     st.session_state.pending_tie_add = 0
 
@@ -945,16 +945,6 @@ with st.expander("ℹ️ Scoring Model"):
 - Confidence score penalized proportionally to inference used
     """)
 
-# --- Download ---
-# Uses display_df (truncated to display limit — matches what user sees in table)
-showing_label = f"top {len(display_df)}" if len(display_df) < count_filtered else "all"
-st.download_button(
-    f"📥 Download Current View — {len(display_df):,} facilities ({showing_label})",
-    display_df.to_csv(index=False).encode('utf-8'),
-    "rounding_targets.csv",
-    mime="text/csv",
-)
-
 # --- Summary Statistics ---
 # Uses d_final (full filtered set, NOT truncated) for accurate stats
 with st.expander(f"📊 Summary Statistics — {count_filtered:,} filtered facilities"):
@@ -1016,3 +1006,12 @@ with st.expander(f"📊 Summary Statistics — {count_filtered:,} filtered facil
         q1.metric("High Confidence (✓)", f"{(stats_df['data_confidence'] >= 90).sum()}")
         q2.metric("Medium (~)", f"{((stats_df['data_confidence'] >= 75) & (stats_df['data_confidence'] < 90)).sum()}")
         q3.metric("Needs Verification (⚠)", f"{(stats_df['data_confidence'] < 75).sum()}")
+
+# --- Download (bottom of page) ---
+showing_label = f"top {len(display_df)}" if len(display_df) < count_filtered else "all"
+st.download_button(
+    f"📥 Download Current View — {len(display_df):,} facilities ({showing_label})",
+    display_df.to_csv(index=False).encode('utf-8'),
+    "rounding_targets.csv",
+    mime="text/csv",
+)
