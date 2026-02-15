@@ -615,10 +615,22 @@ exclude_govt = st.sidebar.toggle("Exclude Government Facilities", value=True)
 st.sidebar.divider()
 st.sidebar.number_input("Display Row Count", key="max_show", min_value=1, step=1)
 
-# --- Advanced Weights (collapsed) ---
-with st.sidebar.expander("⚙️ Advanced — Adjust Scoring Weights", expanded=False):
-    st.caption("Weights are loaded from defaults. Changes require app refresh to recalculate scores (cache).")
-    st.markdown("See ℹ️ Scoring Model below the table for weight details.")
+# --- Advanced Info (collapsed) ---
+with st.sidebar.expander("⚙️ Advanced — Scoring Weights", expanded=False):
+    st.markdown("""
+**Level of Care** (0-30)  
+Psych Hospital 30 · Inpt Psych 28 · Hospital 25 · RTC 22 · Res+Dtx 20 · Res 17 · Detox 14
+
+**Clinical Complexity** (0-30)  
+MAT: 0/6/10/14 · Antipsych: 0/3/5/7 · Adv Therapy: 2ea (cap 6) · MMD: 3
+
+**Sentinel Event Risk** (0-25)  
+COD 6 · SMI 5 · SPS 5 · Detox 4 · Crisis 3 · PEFP 2
+
+**Institutional Quality** (0-15)  
+JC 5 · CARF 3 · NOE 2 · DP 2 · Monitoring 2 · OFD 1
+    """)
+    st.caption("Weights are configured in code. Contact dev to adjust.")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -671,8 +683,6 @@ if require_smi:
 if require_accred:
     d_work = d_work[d_work['has_accreditation']]
 
-count_capability = len(d_work)
-
 # --- Government exclusion ---
 if exclude_govt:
     d_work = d_work[~d_work['is_govt']]
@@ -681,21 +691,6 @@ count_final = len(d_work)
 
 # --- Sort ---
 d_final = d_work.sort_values(['score', 'name1'], ascending=[False, True]).copy()
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 12. TIE DETECTION
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-current_limit = int(st.session_state.max_show)
-count_ties = 0
-
-if count_final > current_limit:
-    cutoff = d_final.iloc[current_limit - 1]['score']
-    count_ties = len(d_final.iloc[current_limit:][d_final.iloc[current_limit:]['score'] == cutoff])
-    display_df = d_final.head(current_limit).copy()
-else:
-    display_df = d_final.copy()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -711,29 +706,53 @@ st.markdown(
 )
 
 # --- Funnel Metrics ---
+# Shows pipeline: Raw → Dedup → Setting → Score → Qualified (capability + govt combined)
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("1. Raw Records", f"{total_raw:,}")
 c2.metric("2. Locations", f"{count_unique:,}", delta=f"−{total_raw - count_unique:,}", delta_color="off")
 c3.metric("3. Setting Fit", f"{count_setting:,}", delta=f"−{count_unique - count_setting:,}", delta_color="off")
 c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"−{count_setting - count_scored:,}", delta_color="off")
 c5.metric("5. Qualified", f"{count_final:,}", delta=f"−{count_scored - count_final:,}", delta_color="off")
-if count_ties > 0:
-    c6.metric("6. Ties", f"{count_ties:,}")
-    if c6.button("➕ Include Ties"):
-        st.session_state.pending_tie_add = count_ties
-        st.rerun()
 
 st.markdown('<hr style="margin:0.2rem 0;">', unsafe_allow_html=True)
 
 # --- Search / State filter ---
+# State options drawn from the FILTERED set so users only see states that have results
 c_search, c_state = st.columns([2, 1])
 search = c_search.text_input("🔍 Search Facility Name").lower()
-states = c_state.multiselect("📍 State Filter", options=sorted(d['state_clean'].unique()))
+available_states = sorted(d_final['state_clean'].unique())
+states = c_state.multiselect("📍 State Filter", options=available_states)
 
+# Apply search/state to the full qualified set BEFORE display limit
 if search:
-    display_df = display_df[display_df['name1'].str.lower().str.contains(search, na=False)]
+    d_final = d_final[d_final['name1'].str.lower().str.contains(search, na=False)]
 if states:
-    display_df = display_df[display_df['state_clean'].isin(states)]
+    d_final = d_final[d_final['state_clean'].isin(states)]
+
+count_filtered = len(d_final)
+
+# Show filtered count when search/state narrows results
+if search or states:
+    c6.metric("6. Filtered", f"{count_filtered:,}")
+
+# --- Apply display limit AFTER search/state ---
+current_limit = int(st.session_state.max_show)
+count_ties = 0
+
+if count_filtered > current_limit:
+    cutoff = d_final.iloc[current_limit - 1]['score']
+    count_ties = len(d_final.iloc[current_limit:][d_final.iloc[current_limit:]['score'] == cutoff])
+    display_df = d_final.head(current_limit).copy()
+else:
+    display_df = d_final.copy()
+
+# Ties — always show when present (regardless of search/state)
+if count_ties > 0:
+    if not (search or states):
+        c6.metric("6. Ties", f"{count_ties:,}")
+    if st.button(f"➕ Include {count_ties} Ties at Score {int(cutoff)}"):
+        st.session_state.pending_tie_add = count_ties
+        st.rerun()
 
 # --- Gap analysis ---
 display_df = display_df.copy()
@@ -812,24 +831,29 @@ with st.expander("ℹ️ Scoring Model"):
     """)
 
 # --- Download ---
+# Uses display_df (truncated to display limit — matches what user sees in table)
+showing_label = f"top {len(display_df)}" if len(display_df) < count_filtered else "all"
 st.download_button(
-    "📥 Download Current View (CSV)",
+    f"📥 Download Current View — {len(display_df):,} facilities ({showing_label})",
     display_df.to_csv(index=False).encode('utf-8'),
     "rounding_targets.csv",
     mime="text/csv",
 )
 
 # --- Summary Statistics ---
-with st.expander("📊 Summary Statistics"):
-    if len(display_df) == 0:
+# Uses d_final (full filtered set, NOT truncated) for accurate stats
+with st.expander(f"📊 Summary Statistics — {count_filtered:,} filtered facilities"):
+    if count_filtered == 0:
         st.info("No facilities match current filters.")
     else:
+        stats_df = d_final  # full filtered set, pre-truncation
+
         col1, col2, col3 = st.columns(3)
 
         with col1:
             st.markdown("**Setting Distribution**")
             st.dataframe(
-                display_df['setting_type'].value_counts().reset_index()
+                stats_df['setting_type'].value_counts().reset_index()
                 .rename(columns={'setting_type': 'Setting', 'count': 'Count'}),
                 hide_index=True, use_container_width=True,
             )
@@ -837,29 +861,31 @@ with st.expander("📊 Summary Statistics"):
         with col2:
             st.markdown("**Top 10 States**")
             st.dataframe(
-                display_df['state_clean'].value_counts().head(10).reset_index()
+                stats_df['state_clean'].value_counts().head(10).reset_index()
                 .rename(columns={'state_clean': 'State', 'count': 'Count'}),
                 hide_index=True, use_container_width=True,
             )
 
         with col3:
             st.markdown("**Score Breakdown**")
-            st.metric("Mean Score", f"{display_df['score'].mean():.1f}")
-            st.metric("Median Score", f"{display_df['score'].median():.0f}")
-            st.metric("Range", f"{display_df['score'].min():.0f} – {display_df['score'].max():.0f}")
+            st.metric("Mean Score", f"{stats_df['score'].mean():.1f}")
+            st.metric("Median Score", f"{stats_df['score'].median():.0f}")
+            st.metric("Range", f"{stats_df['score'].min():.0f} – {stats_df['score'].max():.0f}")
 
         # Pillar averages
-        st.markdown("**Pillar Averages (displayed facilities)**")
+        st.markdown("**Pillar Averages**")
         p1, p2, p3, p4 = st.columns(4)
-        p1.metric("Level of Care", f"{display_df['loc_score'].mean():.1f} / 30")
-        p2.metric("Clinical", f"{display_df['clinical_score'].mean():.1f} / 30")
-        p3.metric("Risk", f"{display_df['risk_score'].mean():.1f} / 25")
-        p4.metric("Quality", f"{display_df['quality_score'].mean():.1f} / 15")
+        p1.metric("Level of Care", f"{stats_df['loc_score'].mean():.1f} / 30")
+        p2.metric("Clinical", f"{stats_df['clinical_score'].mean():.1f} / 30")
+        p3.metric("Risk", f"{stats_df['risk_score'].mean():.1f} / 25")
+        p4.metric("Quality", f"{stats_df['quality_score'].mean():.1f} / 15")
 
-        # Gap frequency
+        # Gap frequency — compute on full set
+        stats_df_gaps = stats_df.copy()
+        stats_df_gaps['Gaps'] = stats_df_gaps.apply(calculate_gaps, axis=1)
         st.markdown("**Most Common Gaps**")
         all_gaps = []
-        for g in display_df['Gaps']:
+        for g in stats_df_gaps['Gaps']:
             if g != '—':
                 all_gaps.extend(g.split(' · '))
         if all_gaps:
@@ -872,6 +898,6 @@ with st.expander("📊 Summary Statistics"):
         # Data quality
         st.markdown("**Data Quality**")
         q1, q2, q3 = st.columns(3)
-        q1.metric("High Confidence (✓)", f"{(display_df['data_confidence'] >= 90).sum()}")
-        q2.metric("Medium (~)", f"{((display_df['data_confidence'] >= 75) & (display_df['data_confidence'] < 90)).sum()}")
-        q3.metric("Needs Verification (⚠)", f"{(display_df['data_confidence'] < 75).sum()}")
+        q1.metric("High Confidence (✓)", f"{(stats_df['data_confidence'] >= 90).sum()}")
+        q2.metric("Medium (~)", f"{((stats_df['data_confidence'] >= 75) & (stats_df['data_confidence'] < 90)).sum()}")
+        q3.metric("Needs Verification (⚠)", f"{(stats_df['data_confidence'] < 75).sum()}")
