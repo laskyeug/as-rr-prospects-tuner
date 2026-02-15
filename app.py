@@ -8,13 +8,12 @@ st.set_page_config(page_title="A/S RR Tuner", layout="wide")
 
 st.markdown("""
     <style>
-    /* MAIN LAYOUT */
     .block-container {padding-top: 1.5rem; padding-bottom: 0rem;}
     [data-testid="stSidebar"] {width: 310px !important;}
     
     /* SIDEBAR LIFT & SPACING */
     [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
-        gap: 0.5rem !important;
+        gap: 0.4rem !important;
         padding-top: 0rem !important;
     }
     [data-testid="stSidebarNav"] {display: none;}
@@ -24,22 +23,22 @@ st.markdown("""
         font-size: 1.7rem !important;
     }
     [data-testid="stSidebar"] h3 {
-        margin-top: 0.3rem !important;
+        margin-top: 0.4rem !important;
         margin-bottom: 0.1rem !important;
         font-size: 1.05rem !important;
         font-weight: 600;
     }
-    [data-testid="stSidebar"] hr {margin: 0.4rem 0px !important;}
-    [data-testid="stSidebar"] .stCheckbox {margin-bottom: -8px !important;}
-    
-    /* SLIDER CUES (Less/More) */
-    .slider-container {
+    [data-testid="stSidebar"] hr {margin: 0.3rem 0px !important;}
+
+    /* TIGHT SLIDER LABELS */
+    .slider-label-row {
         display: flex;
         justify-content: space-between;
-        font-size: 12px;
+        font-size: 11px;
         color: #808495;
-        margin-top: -15px;
-        padding-bottom: 10px;
+        margin-top: -22px; 
+        margin-bottom: 8px;
+        padding: 0 5px;
     }
 
     /* CLEAN BUTTON STYLING */
@@ -55,10 +54,7 @@ st.markdown("""
         transition: all 0.2s;
         padding: 4px 0px;
     }
-    div[data-testid="column"] button:hover {
-        background-color: #ff4b4b;
-        color: white;
-    }
+    div[data-testid="column"] button:hover {background-color: #ff4b4b; color: white;}
     </style>
     """, unsafe_allow_html=True)
 
@@ -121,39 +117,29 @@ with st.sidebar.expander("Care Types (Include)", expanded=True):
 
 st.sidebar.subheader("Propensity Settings")
 
-# Slider 1: Infrastructure
 w_infra = st.sidebar.slider("Infrastructure Breadth", 1, 10, 5)
-st.sidebar.markdown('<div class="slider-container"><span>Less (-)</span><span>More (+)</span></div>', unsafe_allow_html=True)
+st.sidebar.markdown('<div class="slider-label-row"><span>Less (-)</span><span>More (+)</span></div>', unsafe_allow_html=True)
 
-# Slider 2: Clinical
 w_clin = st.sidebar.slider("Clinical Depth", 1, 10, 3)
-st.sidebar.markdown('<div class="slider-container"><span>Less (-)</span><span>More (+)</span></div>', unsafe_allow_html=True)
+st.sidebar.markdown('<div class="slider-label-row"><span>Less (-)</span><span>More (+)</span></div>', unsafe_allow_html=True)
 
-# Slider 3: Standard
 w_std = st.sidebar.slider("Standard Services", 0, 5, 1)
-st.sidebar.markdown('<div class="slider-container"><span>Less (-)</span><span>More (+)</span></div>', unsafe_allow_html=True)
+st.sidebar.markdown('<div class="slider-label-row"><span>Less (-)</span><span>More (+)</span></div>', unsafe_allow_html=True)
 
 st.sidebar.divider()
 
-# Replacement for Private Slider: Ownership Logic
-st.sidebar.caption("Ownership Logic")
-priv_mode = st.sidebar.radio(
-    "Ownership Mode", 
-    ["Neutral", "Prioritize Private", "Private Only"], 
-    horizontal=False,
-    label_visibility="collapsed"
-)
+# NEW TWIN TOGGLE SYSTEM
+exclude_gov = st.sidebar.toggle("Exclude Govt / VAMC", value=True)
+exclude_np = st.sidebar.toggle("Exclude Non-Profits", value=False)
 
 st.sidebar.divider()
+
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
 st.sidebar.number_input("Download Size (Rows)", key="max_show", min_value=1, step=1)
-exclude_gov = st.sidebar.toggle("Exclude Govt/VAMC", value=True)
 
 # --- 5. SCORING ---
-# Private Weight adjustment based on UX selection
-p_bonus = 20 if priv_mode == "Prioritize Private" else 0
-
-d['Raw_Score'] = (d['n_infra'] * w_infra) + (d['n_clinical'] * w_clin) + (d['n_private'] * p_bonus) + (d['n_standard'] * w_std)
+# For-profit facilities always get a baseline kicker in the Rank
+d['Raw_Score'] = (d['n_infra'] * w_infra) + (d['n_clinical'] * w_clin) + (d['n_private'] * 25) + (d['n_standard'] * w_std)
 current_max = d['Raw_Score'].max() if d['Raw_Score'].max() > 0 else 1
 d['Propensity Score'] = ((d['Raw_Score'] / current_max) * 100).round(0).astype(int)
 
@@ -166,16 +152,20 @@ if inc_hosp: patterns.append("HI|PSY")
 
 d_work = d[d['service_code_info'].str.contains("|".join(patterns), case=False, na=False)] if patterns else d
 
-# Apply Ownership Filter if "Private Only" selected
-if priv_mode == "Private Only":
-    d_work = d_work[d_work['n_private'] > 0]
+# Toggle 1: Government Filter
+if exclude_gov:
+    d_work = d_work[~d_work['service_code_info'].str.contains('STG|FED|VAMC', case=False, na=False)]
+
+# Toggle 2: Non-Profit Filter
+# Facilities that are NOT Private (PVTP) AND NOT Government (FED/STG/VAMC) are Non-Profits
+if exclude_np:
+    d_work = d_work[d_work['n_private'] > 0] # Simplified logic: If you exclude NP and Govt, you only want Private
 
 count_services = len(d_work)
 d_scored = d_work[d_work['Propensity Score'] >= min_propensity]
 count_scored = len(d_scored)
-d_final = d_scored[~d_scored['service_code_info'].str.contains('STG|FED|VAMC', case=False, na=False)] if exclude_gov else d_scored
+d_final = d_scored.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
 count_final = len(d_final)
-d_final = d_final.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
 
 # --- 7. TIE DETECTION ---
 current_limit = int(st.session_state.max_show)
