@@ -28,6 +28,13 @@ st.markdown("""
 
 if 'max_show' not in st.session_state:
     st.session_state.max_show = 100
+if 'pending_tie_add' not in st.session_state:
+    st.session_state.pending_tie_add = 0
+
+# Apply any pending tie addition (from previous run)
+if st.session_state.pending_tie_add > 0:
+    st.session_state.max_show += st.session_state.pending_tie_add
+    st.session_state.pending_tie_add = 0
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 3. SCORING DEFINITIONS
@@ -703,7 +710,7 @@ c5.metric("5. Qualified", f"{count_final:,}", delta=f"−{count_scored - count_f
 if count_ties > 0:
     c6.metric("6. Ties", f"{count_ties:,}")
     if c6.button("➕ Include Ties"):
-        st.session_state.max_show += count_ties
+        st.session_state.pending_tie_add = count_ties
         st.rerun()
 
 st.divider()
