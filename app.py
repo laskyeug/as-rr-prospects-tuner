@@ -27,9 +27,8 @@ INFRA_CODES = {'HI', 'PSYH', 'RES', 'RL', 'RS', 'DT', 'ADTX', 'ODTX', 'BDTX', 'C
 CLINICAL_CODES = {'METH', 'NXN', 'VTRL', 'LABT', 'MM', 'MSRV', 'UB', 'BERI', 'GH', 'CO', 'VET', 'ADM', 'PW', 'SE'}
 STANDARD_CODES = {'OP', 'IOP', 'PH', 'CBT', 'DBT', 'MI', 'ANG', 'REL', 'TRC', 'SAE', 'TCC', 'CM', 'SS', 'TA'}
 
-# Signatures for Fuzzy Logic
-MAT_CODES = {'METH', 'NXN', 'VTRL'} # Medicated Treatment
-STEP_DOWN_CODES = {'PH', 'IOP'} # Partial Hosp / Intensive Outpatient
+MAT_CODES = {'METH', 'NXN', 'VTRL'}
+STEP_DOWN_CODES = {'PH', 'IOP'}
 
 def count_category(tag_string, category_set):
     tags = set([t.strip() for t in str(tag_string).split('*') if t.strip()])
@@ -59,18 +58,12 @@ def load_data():
         }).reset_index()
         
         rollup['Location'] = rollup.apply(lambda x: f"{x['city_clean']}, {x['state_clean']}" if x['city_clean'] else x['state_clean'], axis=1)
-        
-        # Raw Breadth Counts
         rollup['n_infra'] = rollup['service_code_info'].apply(lambda x: count_category(x, INFRA_CODES))
         rollup['n_clinical'] = rollup['service_code_info'].apply(lambda x: count_category(x, CLINICAL_CODES))
         rollup['n_standard'] = rollup['service_code_info'].apply(lambda x: count_category(x, STANDARD_CODES))
-        
-        # Fuzzy Signature Detection
         rollup['has_detox'] = rollup['service_code_info'].str.contains('DT|ADTX|ODTX', case=False, na=False)
         rollup['n_mat'] = rollup['service_code_info'].apply(lambda x: count_category(x, MAT_CODES))
         rollup['has_stepdown'] = rollup['service_code_info'].apply(lambda x: count_category(x, STEP_DOWN_CODES) > 0)
-        
-        # Explicit Flags
         rollup['is_govt'] = rollup['service_code_info'].str.contains('FED|STG|VAMC|LCLG|GVT', case=False, na=False)
         rollup['is_np'] = rollup['service_code_info'].str.contains('PVTN', case=False, na=False)
         
@@ -90,13 +83,13 @@ with st.sidebar.expander("Care Types (Include)", expanded=True):
 
 st.sidebar.subheader("Importance Weights (%)")
 w_infra = st.sidebar.slider("Infrastructure Breadth", 0, 100, 50)
-st.sidebar.markdown('<div class="slider-label-row"><span>Low Impact</span><span>High Impact</span></div>', unsafe_allow_html=True)
+st.sidebar.markdown('<div class="slider-label-row"><span>No Req.</span><span>Mandatory</span></div>', unsafe_allow_html=True)
 
 w_clin = st.sidebar.slider("Clinical Depth", 0, 100, 30)
-st.sidebar.markdown('<div class="slider-label-row"><span>Low Impact</span><span>High Impact</span></div>', unsafe_allow_html=True)
+st.sidebar.markdown('<div class="slider-label-row"><span>No Req.</span><span>Mandatory</span></div>', unsafe_allow_html=True)
 
 w_std = st.sidebar.slider("Services Offered", 0, 100, 20)
-st.sidebar.markdown('<div class="slider-label-row"><span>Low Impact</span><span>High Impact</span></div>', unsafe_allow_html=True)
+st.sidebar.markdown('<div class="slider-label-row"><span>No Req.</span><span>Mandatory</span></div>', unsafe_allow_html=True)
 
 st.sidebar.divider()
 exclude_non_priv = st.sidebar.toggle("Exclude Explicit Non-Private", value=True)
@@ -105,27 +98,21 @@ st.sidebar.divider()
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
 st.sidebar.number_input("Download Size (Rows)", key="max_show", min_value=1, step=1)
 
-# --- 5. SCORING ENGINE (The Business Signature Model) ---
-# Normalize breadth scores (0-1.0)
+# --- 5. SCORING ENGINE ---
 i_max = d['n_infra'].max() if d['n_infra'].max() > 0 else 1
 c_max = d['n_clinical'].max() if d['n_clinical'].max() > 0 else 1
 s_max = d['n_standard'].max() if d['n_standard'].max() > 0 else 1
 
-d['score_infra'] = (d['n_infra'] / i_max) * w_infra
-d['score_clin'] = (d['n_clinical'] / c_max) * w_clin
-d['score_std'] = (d['n_standard'] / s_max) * w_std
+d['score_infra'] = (d['n_infra'] / i_max) * 100
+d['score_clin'] = (d['n_clinical'] / c_max) * 100
+d['score_std'] = (d['n_standard'] / s_max) * 100
 
-# FUZZY JUDGMENT STARTING POINTS:
+# Fuzzy Judgment
 d['fuzzy_score'] = 0
-# A. The "Medical-Industrial" Bonus (+20): Beds + Detox + Specialized Meds
 d.loc[(d['n_infra'] > 2) & (d['has_detox']) & (d['n_mat'] > 0), 'fuzzy_score'] += 20
-
-# B. The "Continuum" Bonus (+10): Step-down care (PH/IOP) in a residential setting
 d.loc[(d['n_infra'] > 1) & (d['has_stepdown']), 'fuzzy_score'] += 10
 
-d['Raw_Score'] = d['score_infra'] + d['score_clin'] + d['score_std'] + d['fuzzy_score']
-
-# Re-normalize to 0-100
+d['Raw_Score'] = (d['score_infra'] * (w_infra/100)) + (d['score_clin'] * (w_clin/100)) + (d['score_std'] * (w_std/100)) + d['fuzzy_score']
 final_max = d['Raw_Score'].max() if d['Raw_Score'].max() > 0 else 1
 d['Propensity Score'] = ((d['Raw_Score'] / final_max) * 100).round(0).astype(int)
 
@@ -139,7 +126,14 @@ if inc_hosp: patterns.append("HI|PSY")
 d_work = d[d['service_code_info'].str.contains("|".join(patterns), case=False, na=False)] if patterns else d
 count_services = len(d_work)
 
-d_scored = d_work[d_work['Propensity Score'] >= min_propensity]
+# APPLYING THE "REQUIREMENT" LOGIC
+# If a slider is > 0, the facility MUST have at least 1 tag in that category to pass
+d_scored = d_work[
+    (d_work['Propensity Score'] >= min_propensity) &
+    ((w_infra == 0) | (d_work['n_infra'] > 0)) &
+    ((w_clin == 0) | (d_work['n_clinical'] > 0)) &
+    ((w_std == 0) | (d_work['n_standard'] > 0))
+]
 count_scored = len(d_scored)
 
 d_final = d_scored.copy()
@@ -149,7 +143,7 @@ if exclude_non_priv:
 count_final = len(d_final)
 d_final = d_final.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
 
-# --- 7. TIE DETECTION & DISPLAY ---
+# --- 7. TIE DETECTION ---
 current_limit = int(st.session_state.max_show)
 count_ties = 0
 if count_final > current_limit:
