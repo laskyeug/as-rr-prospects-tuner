@@ -637,10 +637,10 @@ st.sidebar.divider()
 # --- Score Thresholds ---
 with st.sidebar.expander("🎚️ Minimum Scores", expanded=False):
     min_total = st.slider("Total Score", 0, 100, 67, 1)
-    min_loc = st.slider("Level of Care", 0, 30, 0, 5)
-    min_clinical = st.slider("Clinical Complexity", 0, 30, 0, 5)
-    min_risk = st.slider("Sentinel Event Risk", 0, 25, 0, 5)
-    min_quality = st.slider("Institutional Quality", 0, 15, 0, 1)
+    min_loc = st.slider("Level of Care", 0, 30, 15, 1)
+    min_clinical = st.slider("Clinical Complexity", 0, 30, 10, 1)
+    min_risk = st.slider("Sentinel Event Risk", 0, 25, 15, 1)
+    min_quality = st.slider("Institutional Quality", 0, 15, 6, 1)
 
 st.sidebar.divider()
 
