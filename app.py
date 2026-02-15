@@ -4,7 +4,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # --- 1. CONFIG & STYLING ---
-st.set_page_config(page_title="A/S RR Tuner", layout="wide")
+st.set_page_config(page_title="A/S Propensity Engine", layout="wide")
 
 st.markdown("""
     <style>
@@ -42,7 +42,7 @@ st.markdown("""
         padding: 0 5px;
     }
 
-    /* CLEAN BUTTON STYLING (Column 6) */
+    /* CLEAN BUTTON STYLING */
     div[data-testid="column"] button {
         width: 90%;
         margin-left: 5%;
@@ -68,11 +68,8 @@ if 'max_show' not in st.session_state:
     st.session_state.max_show = 100
 
 # --- 3. DATA LOADING & PROPENSITY DEFINITIONS ---
-# Category A: Asset Intensity (Beds and Facilities)
 ASSET_CODES = {'HI', 'PSYH', 'RES', 'RL', 'RS', 'DT', 'ADTX', 'ODTX', 'BDTX', 'CDTX', 'MDTX'}
-# Category B: Medical Intensity (Acute Services)
 MEDICAL_CODES = {'METH', 'NXN', 'VTRL', 'LABT', 'MM', 'MSRV', 'UB', 'BERI', 'GH'}
-# Category C: Operational Density (Continuum Services)
 OPS_CODES = {'PH', 'IOP', 'CBT', 'DBT', 'MI', 'ANG', 'REL', 'TRC', 'SAE', 'TCC', 'CM', 'SS', 'TA'}
 
 GOVT_CODES = {'FED', 'STG', 'VAMC', 'LCLG', 'GVT', 'STLG'}
@@ -106,11 +103,17 @@ def load_data():
         }).reset_index()
         
         rollup['Location'] = rollup.apply(lambda x: f"{x['city_clean']}, {x['state_clean']}" if x['city_clean'] else x['state_clean'], axis=1)
+        rollup['phone'] = rollup['phone'].fillna('N/A').astype(str)
         
-        # Pre-Calculate Propensity Raw Counts
+        # Calculate Raw Counts
         rollup['n_assets'] = rollup['service_code_info'].apply(lambda x: count_category(x, ASSET_CODES))
         rollup['n_medical'] = rollup['service_code_info'].apply(lambda x: count_category(x, MEDICAL_CODES))
         rollup['n_ops'] = rollup['service_code_info'].apply(lambda x: count_category(x, OPS_CODES))
+        
+        # Static Percentages based on TOTAL POSSIBLE tags in the library
+        rollup['pct_assets'] = (rollup['n_assets'] / len(ASSET_CODES)) * 100
+        rollup['pct_medical'] = (rollup['n_medical'] / len(MEDICAL_CODES)) * 100
+        rollup['pct_ops'] = (rollup['n_ops'] / len(OPS_CODES)) * 100
         
         rollup['is_govt'] = rollup['service_code_info'].str.contains('|'.join(GOVT_CODES), case=False, na=False)
         rollup['is_np'] = rollup['service_code_info'].str.contains('|'.join(NP_CODES), case=False, na=False)
@@ -121,7 +124,7 @@ def load_data():
 
 d, total_raw = load_data()
 
-# --- 4. SCORING CONTROL BOARD (Sidebar) ---
+# --- 4. SIDEBAR CONTROL BOARD ---
 st.sidebar.title("🎛️ Propensity Engine")
 
 with st.sidebar.expander("Care Funnel Filters", expanded=True):
@@ -130,41 +133,41 @@ with st.sidebar.expander("Care Funnel Filters", expanded=True):
     inc_hosp = st.checkbox("Hospital / Inpatient", value=True)
 
 st.sidebar.subheader("Hurdle Intensity (%)")
-# Sliders act as the MINIMUM percentage of categorical tags required to clear the hurdle
-h_assets = st.sidebar.slider("Asset Intensity", 0, 100, 30)
+h_assets = st.sidebar.slider("Asset Intensity", 0, 100, 0)
 st.sidebar.markdown('<div class="slider-label-row"><span>Lower Req.</span><span>Industrial</span></div>', unsafe_allow_html=True)
 
-h_medical = st.sidebar.slider("Medical Intensity", 0, 100, 25)
+h_medical = st.sidebar.slider("Medical Intensity", 0, 100, 0)
 st.sidebar.markdown('<div class="slider-label-row"><span>Lower Req.</span><span>Acute Medical</span></div>', unsafe_allow_html=True)
 
-h_ops = st.sidebar.slider("Operational Density", 0, 100, 15)
+h_ops = st.sidebar.slider("Operational Density", 0, 100, 0)
 st.sidebar.markdown('<div class="slider-label-row"><span>Lower Req.</span><span>Full Continuum</span></div>', unsafe_allow_html=True)
 
 st.sidebar.divider()
 exclude_explicit = st.sidebar.toggle("Exclude Explicit Govt / NP", value=True)
 
 st.sidebar.divider()
-min_floor = st.sidebar.slider("Minimum Propensity Floor", 0, 100, 45)
+min_floor = st.sidebar.slider("Minimum Propensity Floor", 0, 100, 30)
 st.sidebar.number_input("Display Row Count", key="max_show", min_value=1, step=1)
 
-# --- 5. SCORING & FILTERING ENGINE (The Logic Layer) ---
-# Normalizing signals against the highest count in the dataset
-a_max = d['n_assets'].max() if d['n_assets'].max() > 0 else 1
-m_max = d['n_medical'].max() if d['n_medical'].max() > 0 else 1
-o_max = d['n_ops'].max() if d['n_ops'].max() > 0 else 1
+# --- 5. SCORING ENGINE (The Logic Layer) ---
+# Weight logic: If sliders are all 0, treat them as equal (33% each). 
+# Otherwise, use them as relative weights.
+total_weight = h_assets + h_medical + h_ops
+if total_weight == 0:
+    d['Propensity Score'] = ((d['pct_assets'] + d['pct_medical'] + d['pct_ops']) / 3)
+else:
+    d['Propensity Score'] = (
+        (d['pct_assets'] * (h_assets / total_weight)) + 
+        (d['pct_medical'] * (h_medical / total_weight)) + 
+        (d['pct_ops'] * (h_ops / total_weight))
+    )
 
-d['pct_assets'] = (d['n_assets'] / a_max) * 100
-d['pct_medical'] = (d['n_medical'] / m_max) * 100
-d['pct_ops'] = (d['n_ops'] / o_max) * 100
+d['Propensity Score'] = d['Propensity Score'].round(0).astype(int)
 
-# The Propensity Score is the mean of the three signatures
-d['Propensity Score'] = ((d['pct_assets'] + d['pct_medical'] + d['pct_ops']) / 3).round(0).astype(int)
-
-# THE WATERFALL FILTERING
-# Step 1: Unique Locations (Handled by Rollup)
+# --- 6. FILTERING ENGINE (The Waterfall) ---
 count_unique = len(d)
 
-# Step 2: Care Types Fit
+# Step 1: Care Types
 patterns = []
 if inc_res: patterns.append("RES|RL|RS")
 if inc_dtx: patterns.append("DT|ADTX")
@@ -172,25 +175,25 @@ if inc_hosp: patterns.append("HI|PSY")
 d_work = d[d['service_code_info'].str.contains("|".join(patterns), case=False, na=False)] if patterns else d
 count_fit = len(d_work)
 
-# Step 3: Score Fit (Propensity Hurdles + Floor)
+# Step 2: Hurdles & Floor
+# Hurdles only apply if > 0. Floor always applies.
 d_scored = d_work[
-    (d_work['pct_assets'] >= h_assets) &
-    (d_work['pct_medical'] >= h_medical) &
-    (d_work['pct_ops'] >= h_ops) &
+    ((h_assets == 0) | (d_work['pct_assets'] >= h_assets)) &
+    ((h_medical == 0) | (d_work['pct_medical'] >= h_medical)) &
+    ((h_ops == 0) | (d_work['pct_ops'] >= h_ops)) &
     (d_work['Propensity Score'] >= min_floor)
 ]
 count_scored = len(d_scored)
 
-# Step 4: Total Qualified (Ownership Cut)
+# Step 3: Ownership Cut
 d_final = d_scored.copy()
 if exclude_explicit:
     d_final = d_final[~(d_final['is_govt'] | d_final['is_np'])]
 count_final = len(d_final)
 
-# Sort for Display
 d_final = d_final.sort_values(by=['Propensity Score', 'name1'], ascending=[False, True])
 
-# --- 6. TIE DETECTION ---
+# --- 7. TIE DETECTION ---
 current_limit = int(st.session_state.max_show)
 count_ties = 0
 if count_final > current_limit:
@@ -200,10 +203,9 @@ if count_final > current_limit:
 else:
     display_df = d_final.copy()
 
-# --- 7. MAIN VIEW ---
+# --- 8. MAIN VIEW ---
 st.title("📊 Commercial Propensity Targets")
 
-# WATERFALL METRICS
 m1, m2, m3, m4, m5, m6 = st.columns(6)
 m1.metric("1. Universe", f"{total_raw:,}")
 m2.metric("2. Unique Locs", f"{count_unique:,}", delta=f"-{total_raw - count_unique:,}", delta_color="off")
@@ -212,7 +214,7 @@ m4.metric("4. Score Fit", f"{count_scored:,}", delta=f"-{count_fit - count_score
 m5.metric("5. Qualified", f"{count_final:,}", delta=f"-{count_scored - count_final:,}", delta_color="off")
 
 if count_ties > 0:
-    m6.metric("6. Ties Hidden", f"{count_ties:,}")
+    m6.metric("6. Hidden Ties", f"{count_ties:,}")
     if m6.button("➕ Include Ties"):
         st.session_state.max_show += count_ties
         st.rerun()
@@ -225,18 +227,12 @@ states = c_state.multiselect("📍 State", options=sorted(d['state_clean'].uniqu
 if search: display_df = display_df[display_df['name1'].str.lower().str.contains(search)]
 if states: display_df = display_df[display_df['state_clean'].isin(states)]
 
-# Rank Inject
 display_df = display_df.reset_index(drop=True)
 display_df.insert(0, 'Rank', display_df.index + 1)
 
-# DATA TABLE
 st.dataframe(
     display_df[['Rank', 'name1', 'Location', 'phone', 'Propensity Score', 'orig_row']].rename(
-        columns={
-            'name1': 'Facility Name', 
-            'phone': 'Phone', 
-            'orig_row': 'Source Row(s)'
-        }
+        columns={'name1': 'Facility Name', 'phone': 'Phone', 'orig_row': 'Source Row(s)'}
     ), 
     use_container_width=True, 
     height=550, 
