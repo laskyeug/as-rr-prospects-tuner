@@ -8,12 +8,13 @@ st.set_page_config(page_title="A/S RR Tuner", layout="wide")
 
 st.markdown("""
     <style>
+    /* MAIN LAYOUT */
     .block-container {padding-top: 1.5rem; padding-bottom: 0rem;}
     [data-testid="stSidebar"] {width: 310px !important;}
     
-    /* SIDEBAR LIFT & SPACING */
+    /* SIDEBAR LIFT & GLOBAL SPACING */
     [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
-        gap: 0.4rem !important;
+        gap: 0.6rem !important;
         padding-top: 0rem !important;
     }
     [data-testid="stSidebarNav"] {display: none;}
@@ -30,18 +31,18 @@ st.markdown("""
     }
     [data-testid="stSidebar"] hr {margin: 0.3rem 0px !important;}
 
-    /* TIGHT SLIDER LABELS */
+    /* TIGHT SLIDER LABELS BUT SPACED BLOCKS */
     .slider-label-row {
         display: flex;
         justify-content: space-between;
         font-size: 11px;
         color: #808495;
         margin-top: -22px; 
-        margin-bottom: 8px;
+        margin-bottom: 12px; /* Breathing room before next slider */
         padding: 0 5px;
     }
 
-    /* CLEAN BUTTON STYLING */
+    /* CLEAN BUTTON STYLING (Column 6) */
     div[data-testid="column"] button {
         width: 90%;
         margin-left: 5%;
@@ -51,10 +52,14 @@ st.markdown("""
         background-color: #262730; 
         color: #ff4b4b; 
         font-weight: 600;
+        font-size: 13px;
         transition: all 0.2s;
         padding: 4px 0px;
     }
-    div[data-testid="column"] button:hover {background-color: #ff4b4b; color: white;}
+    div[data-testid="column"] button:hover {
+        background-color: #ff4b4b;
+        color: white;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -107,7 +112,7 @@ def load_data():
 
 d, total_raw = load_data()
 
-# --- 4. SCORING CONTROL BOARD ---
+# --- 4. SCORING CONTROL BOARD (Sidebar) ---
 st.sidebar.title("🎛️ Scoring Controls")
 
 with st.sidebar.expander("Care Types (Include)", expanded=True):
@@ -117,18 +122,21 @@ with st.sidebar.expander("Care Types (Include)", expanded=True):
 
 st.sidebar.subheader("Propensity Settings")
 
+# Slider 1: Infrastructure
 w_infra = st.sidebar.slider("Infrastructure Breadth", 1, 10, 5)
 st.sidebar.markdown('<div class="slider-label-row"><span>Less (-)</span><span>More (+)</span></div>', unsafe_allow_html=True)
 
+# Slider 2: Clinical
 w_clin = st.sidebar.slider("Clinical Depth", 1, 10, 3)
 st.sidebar.markdown('<div class="slider-label-row"><span>Less (-)</span><span>More (+)</span></div>', unsafe_allow_html=True)
 
-w_std = st.sidebar.slider("Standard Services", 0, 5, 1)
+# Slider 3: Relabeled as Services Offered
+w_std = st.sidebar.slider("Services Offered", 0, 5, 1)
 st.sidebar.markdown('<div class="slider-label-row"><span>Less (-)</span><span>More (+)</span></div>', unsafe_allow_html=True)
 
 st.sidebar.divider()
 
-# NEW TWIN TOGGLE SYSTEM
+# Twin Toggle Ownership Logic
 exclude_gov = st.sidebar.toggle("Exclude Govt / VAMC", value=True)
 exclude_np = st.sidebar.toggle("Exclude Non-Profits", value=False)
 
@@ -137,13 +145,13 @@ st.sidebar.divider()
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
 st.sidebar.number_input("Download Size (Rows)", key="max_show", min_value=1, step=1)
 
-# --- 5. SCORING ---
-# For-profit facilities always get a baseline kicker in the Rank
+# --- 5. SCORING ENGINE ---
+# Kicker for for-profit entities is 25 points
 d['Raw_Score'] = (d['n_infra'] * w_infra) + (d['n_clinical'] * w_clin) + (d['n_private'] * 25) + (d['n_standard'] * w_std)
 current_max = d['Raw_Score'].max() if d['Raw_Score'].max() > 0 else 1
 d['Propensity Score'] = ((d['Raw_Score'] / current_max) * 100).round(0).astype(int)
 
-# --- 6. FILTERING ENGINE ---
+# --- 6. FILTERING ENGINE (The Waterfall) ---
 count_unique = len(d)
 patterns = []
 if inc_res: patterns.append("RES|RL|RS")
@@ -152,14 +160,13 @@ if inc_hosp: patterns.append("HI|PSY")
 
 d_work = d[d['service_code_info'].str.contains("|".join(patterns), case=False, na=False)] if patterns else d
 
-# Toggle 1: Government Filter
+# Apply Government Filter
 if exclude_gov:
     d_work = d_work[~d_work['service_code_info'].str.contains('STG|FED|VAMC', case=False, na=False)]
 
-# Toggle 2: Non-Profit Filter
-# Facilities that are NOT Private (PVTP) AND NOT Government (FED/STG/VAMC) are Non-Profits
+# Apply Non-Profit Filter
 if exclude_np:
-    d_work = d_work[d_work['n_private'] > 0] # Simplified logic: If you exclude NP and Govt, you only want Private
+    d_work = d_work[d_work['n_private'] > 0]
 
 count_services = len(d_work)
 d_scored = d_work[d_work['Propensity Score'] >= min_propensity]
@@ -196,7 +203,7 @@ if count_ties > 0:
 else:
     c6.empty()
 
-# Search
+# Search and State Filter
 c_search, c_state = st.columns([2, 1])
 search = c_search.text_input("🔍 Search Name").lower()
 states = c_state.multiselect("📍 State", options=sorted(d['state_clean'].unique()))
@@ -204,9 +211,11 @@ states = c_state.multiselect("📍 State", options=sorted(d['state_clean'].uniqu
 if search: display_df = display_df[display_df['name1'].str.lower().str.contains(search)]
 if states: display_df = display_df[display_df['state_clean'].isin(states)]
 
+# Rank logic
 display_df = display_df.reset_index(drop=True)
 display_df.insert(0, 'Rank', display_df.index + 1)
 
+# Final Dataframe Display
 st.dataframe(
     display_df[['Rank', 'name1', 'Location', 'phone', 'Propensity Score', 'orig_row']].rename(
         columns={'name1': 'Facility Name', 'phone': 'Phone', 'orig_row': 'Source Row(s)'}
