@@ -818,11 +818,15 @@ st.markdown(
 
 # --- Funnel Metrics (tighter spacing, ties+button on same row) ---
 c1, c2, c3, c4, c5, c6, c7 = st.columns([1, 1, 1, 1, 1, 0.6, 0.8])
-c1.metric("Raw Records", f"{total_raw:,}")
-c2.metric("Locations", f"{count_unique:,}", delta=f"−{total_raw - count_unique:,}", delta_color="off")
-c3.metric("Setting Fit", f"{count_setting:,}", delta=f"−{count_unique - count_setting:,}", delta_color="off")
-c4.metric("Score Fit", f"{count_scored:,}", delta=f"−{count_setting - count_scored:,}", delta_color="off")
-c5.metric("Qualified", f"{count_final:,}", delta=f"−{count_scored - count_final:,}", delta_color="off")
+c1.metric("Raw Records", f"{total_raw:,}", help="Total rows in SAMHSA dataset (SUD + MH)")
+c2.metric("Locations", f"{count_unique:,}", delta=f"−{total_raw - count_unique:,}", delta_color="off",
+          help="Deduplicated by facility name + city + state. SUD & MH entries at the same location are merged.")
+c3.metric("Setting Fit", f"{count_setting:,}", delta=f"−{count_unique - count_setting:,}", delta_color="off",
+          help="Filtered to selected care settings (sidebar). Outpatient-only facilities excluded.")
+c4.metric("Score Fit", f"{count_scored:,}", delta=f"−{count_setting - count_scored:,}", delta_color="off",
+          help="Filtered by minimum score thresholds (Total, LOC, Clinical, Risk, Quality sliders).")
+c5.metric("Qualified", f"{count_final:,}", delta=f"−{count_scored - count_final:,}", delta_color="off",
+          help="After applying treatment requirements (COD, MAT, SMI), accreditation filter, and government exclusion.")
 
 st.markdown('<hr style="margin:0.2rem 0;">', unsafe_allow_html=True)
 
@@ -843,7 +847,7 @@ count_filtered = len(d_final)
 
 # Show filtered count when search/state narrows results
 if search or states:
-    c6.metric("Filtered", f"{count_filtered:,}")
+    c6.metric("Filtered", f"{count_filtered:,}", help="Narrowed by facility name search and/or state filter.")
 
 # --- Apply display limit AFTER search/state ---
 current_limit = int(st.session_state.max_show)
@@ -859,7 +863,7 @@ else:
 # Ties — count in c6, button in c7 (same row)
 if count_ties > 0:
     if not (search or states):
-        c6.metric("Ties", f"{count_ties:,}")
+        c6.metric("Ties", f"{count_ties:,}", help=f"Facilities just outside the display limit sharing the cutoff score of {int(cutoff)}.")
     with c7:
         if st.button("➕ Include Ties"):
             st.session_state.pending_tie_add = count_ties
