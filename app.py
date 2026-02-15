@@ -23,9 +23,12 @@ if 'max_show' not in st.session_state:
     st.session_state.max_show = 100
 
 # --- 3. DATA LOADING ---
+# Defining the codes based on what we saw in your DEBUG column
 INFRA_CODES = {'HI', 'PSYH', 'RES', 'RL', 'RS', 'DT', 'ADTX', 'ODTX', 'BDTX', 'CDTX', 'MDTX', 'SUMH', 'MH', 'SA', 'OTP'}
-CLINICAL_CODES = {'UB', 'MM', 'VTRL', 'BERI', 'GH', 'CO', 'VET', 'ADM', 'PW', 'SE', 'LABT', 'MSRV', 'METH', 'NXN'}
-PRIVATE_CODES = {'PVTP'}
+CLINICAL_CODES = {'METH', 'NXN', 'VTRL', 'LABT', 'MM', 'MSRV', 'UB', 'BERI', 'GH', 'CO', 'VET', 'ADM', 'PW', 'SE'}
+PRIVATE_CODES = {'PVTP'} # For-Profit
+GOVT_CODES = {'FED', 'STG', 'VAMC', 'LCLG', 'GVT', 'STLG'} # Government
+NON_PROFIT_CODES = {'PVTN'} # Private Non-Profit (if present)
 STANDARD_CODES = {'OP', 'IOP', 'PH', 'CBT', 'DBT', 'MI', 'ANG', 'REL', 'TRC', 'SAE', 'TCC', 'CM', 'SS', 'TA'}
 
 def count_category(tag_string, category_set):
@@ -94,11 +97,12 @@ min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
 st.sidebar.number_input("Download Size (Rows)", key="max_show", min_value=1, step=1)
 
 # --- 5. SCORING ENGINE ---
+# Kicker is 25 if PVTP is present, otherwise 0
 d['Raw_Score'] = (d['n_infra'] * w_infra) + (d['n_clinical'] * w_clin) + (d['n_private'] * 25) + (d['n_standard'] * w_std)
 current_max = d['Raw_Score'].max() if d['Raw_Score'].max() > 0 else 1
 d['Propensity Score'] = ((d['Raw_Score'] / current_max) * 100).round(0).astype(int)
 
-# --- 6. FILTERING ENGINE (Aggressive Fix) ---
+# --- 6. FILTERING ENGINE (The "Negative Logic" Fix) ---
 count_unique = len(d)
 patterns = []
 if inc_res: patterns.append("RES|RL|RS")
@@ -113,16 +117,16 @@ count_services = len(d_work)
 d_scored = d_work[d_work['Propensity Score'] >= min_propensity]
 count_scored = len(d_scored)
 
-# Filter 3: Ownership (Deterministic)
+# Filter 3: Ownership
 d_final = d_scored.copy()
 
 if exclude_gov:
-    # Explicitly remove Gov codes
-    d_final = d_final[~d_final['service_code_info'].str.contains('FED|STG|VAMC|LCLG|GVT', case=False, na=False)]
+    # Remove anything with a Govt tag
+    d_final = d_final[~d_final['service_code_info'].str.contains('|'.join(GOVT_CODES), case=False, na=False)]
 
 if exclude_np:
-    # EXTREMELY AGGRESSIVE: If toggle is ON, facility MUST contain PVTP to survive
-    d_final = d_final[d_final['service_code_info'].str.contains('PVTP', case=False, na=False)]
+    # Remove anything with a Non-Profit tag
+    d_final = d_final[~d_final['service_code_info'].str.contains('|'.join(NON_PROFIT_CODES), case=False, na=False)]
 
 count_final = len(d_final)
 d_final = d_final.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
@@ -165,9 +169,10 @@ if states: display_df = display_df[display_df['state_clean'].isin(states)]
 display_df = display_df.reset_index(drop=True)
 display_df.insert(0, 'Rank', display_df.index + 1)
 
+# REMOVED DEBUG COLUMN FOR PRODUCTION CLEANLINESS
 st.dataframe(
-    display_df[['Rank', 'name1', 'Location', 'Propensity Score', 'service_code_info']].rename(
-        columns={'name1': 'Facility Name', 'service_code_info': 'DEBUG: Service Tags'}
+    display_df[['Rank', 'name1', 'Location', 'phone', 'Propensity Score', 'orig_row']].rename(
+        columns={'name1': 'Facility Name', 'phone': 'Phone', 'orig_row': 'Source Row(s)'}
     ), 
     use_container_width=True, 
     height=550, 
@@ -175,7 +180,7 @@ st.dataframe(
     column_config={
         "Rank": st.column_config.NumberColumn("Rank", width=40),
         "Propensity Score": st.column_config.ProgressColumn("Propensity", format="%d", min_value=0, max_value=100, width=80),
-        "DEBUG: Service Tags": st.column_config.TextColumn("DEBUG: Service Tags", width=400)
+        "Source Row(s)": st.column_config.TextColumn("Source Row(s)", width=200)
     }
 )
 
