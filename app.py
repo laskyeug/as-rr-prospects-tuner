@@ -3,7 +3,7 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 
-# --- 1. CONFIG & STYLING (Vertical Lift + Restored Deltas) ---
+# --- 1. CONFIG & STYLING (Balanced & Lifted) ---
 st.set_page_config(page_title="A/S RR Tuner", layout="wide")
 
 st.markdown("""
@@ -12,9 +12,9 @@ st.markdown("""
     .block-container {padding-top: 1.5rem; padding-bottom: 0rem;}
     [data-testid="stSidebar"] {width: 310px !important;}
     
-    /* SIDEBAR LIFT */
+    /* SIDEBAR LIFT & SPACING */
     [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
-        gap: 0.5rem !important;
+        gap: 0.6rem !important;
         padding-top: 0rem !important;
     }
     [data-testid="stSidebarNav"] {display: none;}
@@ -24,13 +24,20 @@ st.markdown("""
         font-size: 1.7rem !important;
     }
     [data-testid="stSidebar"] h3 {
-        margin-top: 0.2rem !important;
-        margin-bottom: 0.1rem !important;
+        margin-top: 0.4rem !important;
+        margin-bottom: 0.2rem !important;
         font-size: 1.05rem !important;
+        font-weight: 600;
     }
-    [data-testid="stSidebar"] hr {margin: 0.4rem 0px !important;}
-    [data-testid="stSidebar"] .stCheckbox {margin-bottom: -8px !important;}
-    [data-testid="stSidebar"] .stSlider {padding-bottom: 8px !important;}
+    [data-testid="stSidebar"] hr {
+        margin: 0.4rem 0px !important;
+    }
+    [data-testid="stSidebar"] .stCheckbox {
+        margin-bottom: -8px !important;
+    }
+    [data-testid="stSidebar"] .stSlider {
+        padding-bottom: 8px !important;
+    }
 
     /* METRIC BUTTON STYLING */
     div[data-testid="column"] button {
@@ -102,7 +109,7 @@ def load_data():
 
 d, total_raw = load_data()
 
-# --- 4. SCORING CONTROL BOARD ---
+# --- 4. SCORING CONTROL BOARD (Sidebar) ---
 st.sidebar.title("🎛️ Scoring Controls")
 
 with st.sidebar.expander("Care Types (Include)", expanded=True):
@@ -110,14 +117,15 @@ with st.sidebar.expander("Care Types (Include)", expanded=True):
     inc_dtx = st.checkbox("Detox (DT)")
     inc_hosp = st.checkbox("Hospital / Inpatient")
 
-st.sidebar.subheader("Define 'Propensity'")
+# Sidebar block: Propensity Settings
+st.sidebar.subheader("Propensity Settings")
 w_infra = st.sidebar.slider("Infrastructure Weight", 1, 10, 5)
 w_priv = st.sidebar.slider("Private Ownership Bonus", 0, 20, 10)
 w_clin = st.sidebar.slider("Clinical Depth Weight", 1, 10, 3)
 w_std = st.sidebar.slider("Standard Services Weight", 0, 5, 1)
 
 st.sidebar.divider()
-st.sidebar.subheader("Cutoff & Limits")
+# "Cutoff & Limits" heading removed; slider and inputs remain
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
 st.sidebar.number_input("Download Size (Rows)", key="max_show", min_value=1, step=1)
 exclude_gov = st.sidebar.toggle("Exclude Govt/VAMC", value=True)
@@ -129,7 +137,6 @@ d['Propensity Score'] = ((d['Raw_Score'] / current_max) * 100).round(0).astype(i
 
 # --- 6. FILTERING ENGINE ---
 count_unique = len(d)
-
 patterns = []
 if inc_res: patterns.append("RES|RL|RS")
 if inc_dtx: patterns.append("DT")
@@ -137,13 +144,10 @@ if inc_hosp: patterns.append("HI|PSY")
 
 d_services = d[d['service_code_info'].str.contains("|".join(patterns), case=False, na=False)] if patterns else d
 count_services = len(d_services)
-
 d_scored = d_services[d_services['Propensity Score'] >= min_propensity]
 count_scored = len(d_scored)
-
 d_final = d_scored[~d_scored['service_code_info'].str.contains('STG|FED|VAMC', case=False, na=False)] if exclude_gov else d_scored
 count_final = len(d_final)
-
 d_final = d_final.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
 
 # --- 7. TIE DETECTION ---
@@ -159,7 +163,7 @@ else:
 # --- 8. MAIN VIEW ---
 st.title("📊 Scored Prospects")
 
-# WATERFALL METRICS WITH DELTAS RESTORED
+# WATERFALL METRICS WITH DELTAS
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("1. Universe", f"{total_raw:,}")
 c2.metric("2. Unique Locs", f"{count_unique:,}", delta=f"-{total_raw - count_unique:,}", delta_color="off")
@@ -185,7 +189,11 @@ if states: display_df = display_df[display_df['state_clean'].isin(states)]
 
 st.dataframe(
     display_df[['name1', 'Location', 'phone', 'Propensity Score', 'orig_row']].rename(
-        columns={'name1': 'Facility', 'phone': 'Phone', 'orig_row': 'Source'}
+        columns={
+            'name1': 'Facility Name', 
+            'phone': 'Phone', 
+            'orig_row': 'Source Row(s)'
+        }
     ), 
     use_container_width=True, 
     height=550, 
