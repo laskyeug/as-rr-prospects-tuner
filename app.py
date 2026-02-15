@@ -3,7 +3,7 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 
-# --- 1. CONFIG & STYLING (Balanced & Lifted) ---
+# --- 1. CONFIG & STYLING ---
 st.set_page_config(page_title="A/S RR Tuner", layout="wide")
 
 st.markdown("""
@@ -12,14 +12,14 @@ st.markdown("""
     .block-container {padding-top: 1.5rem; padding-bottom: 0rem;}
     [data-testid="stSidebar"] {width: 310px !important;}
     
-    /* SIDEBAR LIFT & SPACING */
+    /* SIDEBAR LIFT & VERTICAL SPACING */
     [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
         gap: 0.6rem !important;
         padding-top: 0rem !important;
     }
     [data-testid="stSidebarNav"] {display: none;}
     [data-testid="stSidebar"] h1 {
-        margin-top: -30px !important;
+        margin-top: -30px !important; 
         margin-bottom: 0.5rem !important;
         font-size: 1.7rem !important;
     }
@@ -29,17 +29,11 @@ st.markdown("""
         font-size: 1.05rem !important;
         font-weight: 600;
     }
-    [data-testid="stSidebar"] hr {
-        margin: 0.4rem 0px !important;
-    }
-    [data-testid="stSidebar"] .stCheckbox {
-        margin-bottom: -8px !important;
-    }
-    [data-testid="stSidebar"] .stSlider {
-        padding-bottom: 8px !important;
-    }
+    [data-testid="stSidebar"] hr {margin: 0.4rem 0px !important;}
+    [data-testid="stSidebar"] .stCheckbox {margin-bottom: -8px !important;}
+    [data-testid="stSidebar"] .stSlider {padding-bottom: 8px !important;}
 
-    /* METRIC BUTTON STYLING */
+    /* CLEAN BUTTON STYLING (Column 6) */
     div[data-testid="column"] button {
         width: 90%;
         margin-left: 5%;
@@ -117,7 +111,7 @@ with st.sidebar.expander("Care Types (Include)", expanded=True):
     inc_dtx = st.checkbox("Detox (DT)")
     inc_hosp = st.checkbox("Hospital / Inpatient")
 
-# Sidebar block: Propensity Settings
+# Sliders now grouped under 'Propensity Settings'
 st.sidebar.subheader("Propensity Settings")
 w_infra = st.sidebar.slider("Infrastructure Weight", 1, 10, 5)
 w_priv = st.sidebar.slider("Private Ownership Bonus", 0, 20, 10)
@@ -125,7 +119,7 @@ w_clin = st.sidebar.slider("Clinical Depth Weight", 1, 10, 3)
 w_std = st.sidebar.slider("Standard Services Weight", 0, 5, 1)
 
 st.sidebar.divider()
-# "Cutoff & Limits" heading removed; slider and inputs remain
+# No heading for this section as requested
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
 st.sidebar.number_input("Download Size (Rows)", key="max_show", min_value=1, step=1)
 exclude_gov = st.sidebar.toggle("Exclude Govt/VAMC", value=True)
@@ -135,7 +129,7 @@ d['Raw_Score'] = (d['n_infra'] * w_infra) + (d['n_clinical'] * w_clin) + (d['n_p
 current_max = d['Raw_Score'].max() if d['Raw_Score'].max() > 0 else 1
 d['Propensity Score'] = ((d['Raw_Score'] / current_max) * 100).round(0).astype(int)
 
-# --- 6. FILTERING ENGINE ---
+# --- 6. WATERFALL FILTERING ---
 count_unique = len(d)
 patterns = []
 if inc_res: patterns.append("RES|RL|RS")
@@ -187,6 +181,7 @@ states = c_state.multiselect("📍 State", options=sorted(d['state_clean'].uniqu
 if search: display_df = display_df[display_df['name1'].str.lower().str.contains(search)]
 if states: display_df = display_df[display_df['state_clean'].isin(states)]
 
+# Table output with Index hidden and final column renamed
 st.dataframe(
     display_df[['name1', 'Location', 'phone', 'Propensity Score', 'orig_row']].rename(
         columns={
@@ -197,6 +192,7 @@ st.dataframe(
     ), 
     use_container_width=True, 
     height=550, 
+    hide_index=True, # Hides the unlabeled Index column
     column_config={"Propensity Score": st.column_config.ProgressColumn("Propensity", format="%d", min_value=0, max_value=100)}
 )
 
