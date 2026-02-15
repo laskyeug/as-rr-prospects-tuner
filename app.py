@@ -914,13 +914,13 @@ st.dataframe(
     column_config={
         "Rank": st.column_config.NumberColumn("Rank", width=55),
         "Facility Name": st.column_config.TextColumn("Facility Name", width=240),
-        "Location / Phone": st.column_config.TextColumn("Location / Phone", width=230,
+        "Location / Phone": st.column_config.TextColumn("Location / Phone", width=250,
             help="City, State and facility main phone number (typically intake/front desk)"),
-        "Setting": st.column_config.TextColumn("Setting", width=155),
+        "Setting": st.column_config.TextColumn("Setting", width=145),
         "Score": st.column_config.ProgressColumn("Score", format="%d", min_value=0, max_value=100, width=75),
         "L·C·R·Q": st.column_config.TextColumn("L·C·R·Q", width=90,
             help="Level of Care · Clinical Complexity · Sentinel Risk · Institutional Quality"),
-        "Gaps": st.column_config.TextColumn("Missing", width=175,
+        "Gaps": st.column_config.TextColumn("Missing", width=165,
             help="MAT = No medication-assisted therapy\n"
                  "MAT↑ = Has MAT but limited (<3 meds)\n"
                  "AP = No antipsychotic medications\n"
