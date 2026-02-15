@@ -22,12 +22,14 @@ st.markdown("""
 if 'max_show' not in st.session_state:
     st.session_state.max_show = 100
 
-# --- 3. DATA LOADING ---
+# --- 3. DATA LOADING & DEFINITIONS ---
 INFRA_CODES = {'HI', 'PSYH', 'RES', 'RL', 'RS', 'DT', 'ADTX', 'ODTX', 'BDTX', 'CDTX', 'MDTX', 'SUMH', 'MH', 'SA', 'OTP'}
 CLINICAL_CODES = {'METH', 'NXN', 'VTRL', 'LABT', 'MM', 'MSRV', 'UB', 'BERI', 'GH', 'CO', 'VET', 'ADM', 'PW', 'SE'}
-GOVT_CODES = {'FED', 'STG', 'VAMC', 'LCLG', 'GVT', 'STLG'}
-NON_PROFIT_CODES = {'PVTN'}
 STANDARD_CODES = {'OP', 'IOP', 'PH', 'CBT', 'DBT', 'MI', 'ANG', 'REL', 'TRC', 'SAE', 'TCC', 'CM', 'SS', 'TA'}
+
+# Signatures for Fuzzy Logic
+MAT_CODES = {'METH', 'NXN', 'VTRL'} # Medicated Treatment
+STEP_DOWN_CODES = {'PH', 'IOP'} # Partial Hosp / Intensive Outpatient
 
 def count_category(tag_string, category_set):
     tags = set([t.strip() for t in str(tag_string).split('*') if t.strip()])
@@ -57,9 +59,20 @@ def load_data():
         }).reset_index()
         
         rollup['Location'] = rollup.apply(lambda x: f"{x['city_clean']}, {x['state_clean']}" if x['city_clean'] else x['state_clean'], axis=1)
+        
+        # Raw Breadth Counts
         rollup['n_infra'] = rollup['service_code_info'].apply(lambda x: count_category(x, INFRA_CODES))
         rollup['n_clinical'] = rollup['service_code_info'].apply(lambda x: count_category(x, CLINICAL_CODES))
         rollup['n_standard'] = rollup['service_code_info'].apply(lambda x: count_category(x, STANDARD_CODES))
+        
+        # Fuzzy Signature Detection
+        rollup['has_detox'] = rollup['service_code_info'].str.contains('DT|ADTX|ODTX', case=False, na=False)
+        rollup['n_mat'] = rollup['service_code_info'].apply(lambda x: count_category(x, MAT_CODES))
+        rollup['has_stepdown'] = rollup['service_code_info'].apply(lambda x: count_category(x, STEP_DOWN_CODES) > 0)
+        
+        # Explicit Flags
+        rollup['is_govt'] = rollup['service_code_info'].str.contains('FED|STG|VAMC|LCLG|GVT', case=False, na=False)
+        rollup['is_np'] = rollup['service_code_info'].str.contains('PVTN', case=False, na=False)
         
         return rollup, len(df)
     except Exception as e:
@@ -75,30 +88,46 @@ with st.sidebar.expander("Care Types (Include)", expanded=True):
     inc_dtx = st.checkbox("Detox (DT)", value=True)
     inc_hosp = st.checkbox("Hospital / Inpatient", value=True)
 
-st.sidebar.subheader("Propensity Settings")
-w_infra = st.sidebar.slider("Infrastructure Breadth", 1, 10, 5)
-st.sidebar.markdown('<div class="slider-label-row"><span>Less (-)</span><span>More (+)</span></div>', unsafe_allow_html=True)
+st.sidebar.subheader("Importance Weights (%)")
+w_infra = st.sidebar.slider("Infrastructure Breadth", 0, 100, 50)
+st.sidebar.markdown('<div class="slider-label-row"><span>Low Impact</span><span>High Impact</span></div>', unsafe_allow_html=True)
 
-w_clin = st.sidebar.slider("Clinical Depth", 1, 10, 3)
-st.sidebar.markdown('<div class="slider-label-row"><span>Less (-)</span><span>More (+)</span></div>', unsafe_allow_html=True)
+w_clin = st.sidebar.slider("Clinical Depth", 0, 100, 30)
+st.sidebar.markdown('<div class="slider-label-row"><span>Low Impact</span><span>High Impact</span></div>', unsafe_allow_html=True)
 
-w_std = st.sidebar.slider("Services Offered", 0, 5, 1)
-st.sidebar.markdown('<div class="slider-label-row"><span>Less (-)</span><span>More (+)</span></div>', unsafe_allow_html=True)
+w_std = st.sidebar.slider("Services Offered", 0, 100, 20)
+st.sidebar.markdown('<div class="slider-label-row"><span>Low Impact</span><span>High Impact</span></div>', unsafe_allow_html=True)
 
 st.sidebar.divider()
-
-# NEW SINGLE TOGGLE: Exclude explicitly Non-Private (Govt and Non-Profit codes)
-exclude_non_priv = st.sidebar.toggle("Exclude Explicitly Non-Private", value=True)
+exclude_non_priv = st.sidebar.toggle("Exclude Explicit Non-Private", value=True)
 
 st.sidebar.divider()
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
 st.sidebar.number_input("Download Size (Rows)", key="max_show", min_value=1, step=1)
 
-# --- 5. SCORING ENGINE ---
-# No multipliers, just raw weighted counts of breadth
-d['Raw_Score'] = (d['n_infra'] * w_infra) + (d['n_clinical'] * w_clin) + (d['n_standard'] * w_std)
-current_max = d['Raw_Score'].max() if d['Raw_Score'].max() > 0 else 1
-d['Propensity Score'] = ((d['Raw_Score'] / current_max) * 100).round(0).astype(int)
+# --- 5. SCORING ENGINE (The Business Signature Model) ---
+# Normalize breadth scores (0-1.0)
+i_max = d['n_infra'].max() if d['n_infra'].max() > 0 else 1
+c_max = d['n_clinical'].max() if d['n_clinical'].max() > 0 else 1
+s_max = d['n_standard'].max() if d['n_standard'].max() > 0 else 1
+
+d['score_infra'] = (d['n_infra'] / i_max) * w_infra
+d['score_clin'] = (d['n_clinical'] / c_max) * w_clin
+d['score_std'] = (d['n_standard'] / s_max) * w_std
+
+# FUZZY JUDGMENT STARTING POINTS:
+d['fuzzy_score'] = 0
+# A. The "Medical-Industrial" Bonus (+20): Beds + Detox + Specialized Meds
+d.loc[(d['n_infra'] > 2) & (d['has_detox']) & (d['n_mat'] > 0), 'fuzzy_score'] += 20
+
+# B. The "Continuum" Bonus (+10): Step-down care (PH/IOP) in a residential setting
+d.loc[(d['n_infra'] > 1) & (d['has_stepdown']), 'fuzzy_score'] += 10
+
+d['Raw_Score'] = d['score_infra'] + d['score_clin'] + d['score_std'] + d['fuzzy_score']
+
+# Re-normalize to 0-100
+final_max = d['Raw_Score'].max() if d['Raw_Score'].max() > 0 else 1
+d['Propensity Score'] = ((d['Raw_Score'] / final_max) * 100).round(0).astype(int)
 
 # --- 6. FILTERING ENGINE ---
 count_unique = len(d)
@@ -114,21 +143,18 @@ d_scored = d_work[d_work['Propensity Score'] >= min_propensity]
 count_scored = len(d_scored)
 
 d_final = d_scored.copy()
-
 if exclude_non_priv:
-    # Combine Govt and Non-Profit codes into one exclusion pattern
-    non_priv_patterns = '|'.join(GOVT_CODES | NON_PROFIT_CODES)
-    d_final = d_final[~d_final['service_code_info'].str.contains(non_priv_patterns, case=False, na=False)]
+    d_final = d_final[~(d_final['is_govt'] | d_final['is_np'])]
 
 count_final = len(d_final)
 d_final = d_final.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
 
-# --- 7. TIE DETECTION ---
+# --- 7. TIE DETECTION & DISPLAY ---
 current_limit = int(st.session_state.max_show)
 count_ties = 0
 if count_final > current_limit:
-    cutoff_score = d_final.iloc[current_limit - 1]['Propensity Score']
-    count_ties = len(d_final.iloc[current_limit:][d_final.iloc[current_limit:]['Propensity Score'] == cutoff_score])
+    cutoff = d_final.iloc[current_limit - 1]['Propensity Score']
+    count_ties = len(d_final.iloc[current_limit:][d_final.iloc[current_limit:]['Propensity Score'] == cutoff])
     display_df = d_final.head(current_limit).copy()
 else:
     display_df = d_final.copy()
