@@ -17,13 +17,15 @@ st.markdown("""
     div.stButton > button {
         width: 100%;
         margin-top: -15px; 
+        font-weight: bold;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. SESSION STATE INIT ---
-if 'max_show' not in st.session_state:
-    st.session_state.max_show = 1000
+# --- 2. SESSION STATE MANAGEMENT ---
+# We use a single source of truth: st.session_state.download_limit
+if 'download_limit' not in st.session_state:
+    st.session_state.download_limit = 1000
 
 # --- 3. CODE CATEGORIZATION ---
 INFRA_CODES = {'HI', 'PSYH', 'RES', 'RL', 'RS', 'DT', 'ADTX', 'ODTX', 'BDTX', 'CDTX', 'MDTX', 'SUMH', 'MH', 'SA', 'OTP'}
@@ -105,16 +107,15 @@ st.sidebar.divider()
 st.sidebar.subheader("3. Cutoff & Limits")
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
 
-# SYNC LOGIC: Function to sync widget -> state
-def update_max_show():
-    st.session_state.max_show = st.session_state.max_show_input
+# Sidebar Input: Updates the session state when changed
+def on_limit_change():
+    st.session_state.download_limit = st.session_state.sidebar_limit
 
-# Max Rows Input (Linked to session state)
 st.sidebar.number_input(
     "Download Size (Rows)", 
-    value=st.session_state.max_show,
-    key="max_show_input",
-    on_change=update_max_show
+    value=st.session_state.download_limit,
+    key="sidebar_limit",
+    on_change=on_limit_change
 )
 
 st.sidebar.divider()
@@ -163,26 +164,27 @@ count_final = len(d_final)
 d_final = d_final.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
 
 # --- 6. TIE DETECTION LOGIC ---
+current_limit = st.session_state.download_limit
 count_ties = 0
-cutoff_score = 0
-display_df = d_final.copy()
 has_hidden_ties = False
 
-if count_final > st.session_state.max_show:
-    # Check the last visible record
-    cutoff_record = d_final.iloc[st.session_state.max_show - 1] 
+# Only calculate ties if we are cutting off the list
+if count_final > current_limit:
+    # Identify the score of the LAST visible record
+    cutoff_record = d_final.iloc[current_limit - 1]
     cutoff_score = cutoff_record['Propensity Score']
     
-    # Check hidden records
-    hidden_records = d_final.iloc[st.session_state.max_show:]
+    # Look at everything AFTER the limit
+    hidden_records = d_final.iloc[current_limit:]
+    
+    # Count how many hidden records share that same score
     tie_matches = hidden_records[hidden_records['Propensity Score'] == cutoff_score]
     count_ties = len(tie_matches)
     
     if count_ties > 0:
         has_hidden_ties = True
-    
-    # Apply strict cut for display
-    display_df = d_final.head(st.session_state.max_show)
+        
+    display_df = d_final.head(current_limit)
 else:
     display_df = d_final
 
@@ -197,15 +199,20 @@ c3.metric("3. Care Type Fit", f"{count_services:,}", delta=f"-{count_unique - co
 c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"-{count_services - count_scored:,}", delta_color="off")
 c5.metric("5. Total Qualified", f"{count_final:,}", delta=f"-{count_scored - count_final:,}", delta_color="off")
 
-# 6th Metric: ONLY APPEARS IF TIES EXIST
+# 6th Metric: EXCLUSIVE TIE HANDLER
 if has_hidden_ties:
     c6.metric("6. Hidden Ties", f"{count_ties:,}")
-    if c6.button("➕ Adjust Download Size"):
-        new_total = st.session_state.max_show + count_ties
-        # Update BOTH state variables to force sync
-        st.session_state.max_show = new_total
-        st.session_state.max_show_input = new_total
-        st.rerun()
+    
+    # Define the callback to update state safely
+    def add_ties():
+        st.session_state.download_limit += count_ties
+        # Also sync the sidebar widget to match
+        st.session_state.sidebar_limit = st.session_state.download_limit
+    
+    c6.button("➕ Adjust Download Size", on_click=add_ties)
+else:
+    # Intentionally empty if no ties (or if they have been added)
+    c6.empty()
 
 # Search
 c_search, c_state = st.columns(2)
