@@ -3,7 +3,7 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 
-# --- 1. CONFIG & STYLING ---
+# --- 1. CONFIG & STYLING (Decluttered & Compact) ---
 st.set_page_config(page_title="A/S RR Tuner", layout="wide")
 
 st.markdown("""
@@ -11,67 +11,54 @@ st.markdown("""
     /* MAIN LAYOUT */
     .block-container {padding-top: 1rem; padding-bottom: 0rem;}
     [data-testid="stSidebar"] {width: 300px !important;}
-    div[data-testid="stMetric"] {padding: 0px 0px 5px 0px;}
     
-    /* SIDEBAR COMPACTING (20% Reduction) */
-    /* Shrink vertical gap between all elements */
+    /* SIDEBAR COMPACTING (Targeting 15% extra reduction) */
     [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
-        gap: 0.2rem !important;
+        gap: 0.1rem !important;
     }
-    /* Tighten Headers */
     [data-testid="stSidebar"] h1 {
-        padding-top: 0rem !important;
-        padding-bottom: 0.2rem !important;
-        font-size: 1.8rem !important; 
+        margin-bottom: 0.5rem !important;
+        font-size: 1.6rem !important;
     }
     [data-testid="stSidebar"] h3 {
-        padding-top: 0.5rem !important;
-        padding-bottom: 0rem !important;
+        margin-top: 0.3rem !important;
         margin-bottom: 0rem !important;
-        font-size: 1rem !important;
+        font-size: 0.95rem !important;
     }
-    /* Tighten Dividers */
     [data-testid="stSidebar"] hr {
-        margin-top: 0.5rem !important;
-        margin-bottom: 0.5rem !important;
+        margin: 0.4rem 0px !important;
     }
-    /* Tighten Widgets */
     [data-testid="stSidebar"] .stCheckbox {
-        margin-top: -5px !important;
-        padding-bottom: 0px !important;
+        margin-bottom: -12px !important;
     }
     [data-testid="stSidebar"] .stSlider {
-        padding-top: 0px !important;
-        padding-bottom: 10px !important;
+        padding-bottom: 5px !important;
     }
-    [data-testid="stSidebar"] .stNumberInput {
-        padding-bottom: 0px !important;
+    
+    /* METRIC & BUTTON ALIGNMENT (Flush with Waterfall) */
+    div[data-testid="stMetric"] {
+        padding: 0px !important;
     }
-    /* Tighten Caption */
-    [data-testid="stSidebar"] .stCaption {
-        margin-bottom: -5px !important;
-    }
-
-    /* CLEAN BUTTON STYLING (From Version B) */
     div[data-testid="column"] button {
         width: 100%;
-        margin-top: -15px; 
+        margin-top: -12px; /* Sits flush under the tie count */
         border: none;
+        border-radius: 4px;
         background-color: #262730; 
         color: #ff4b4b; 
         font-weight: 600;
+        font-size: 12px;
         transition: all 0.2s;
+        padding: 2px 0px;
     }
     div[data-testid="column"] button:hover {
         background-color: #ff4b4b;
         color: white;
-        border: none;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. SESSION STATE MANAGEMENT ---
-# Default to 100 rows
+# --- 2. SESSION STATE ---
 if 'max_show' not in st.session_state:
     st.session_state.max_show = 100
 
@@ -90,9 +77,6 @@ def merge_tags(series):
     unique_tags = sorted(list(set([t.strip() for t in all_tags if t.strip()])))
     return " * ".join(unique_tags)
 
-def merge_rows(series):
-    return ", ".join(series.astype(str))
-
 @st.cache_data(ttl=3600)
 def load_data():
     scope = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
@@ -104,22 +88,17 @@ def load_data():
         df['orig_row'] = df.index + 2
         
         # Pre-processing
-        df['city'] = df['city'].fillna('')
-        df['state'] = df['state'].fillna('')
-        df['city_clean'] = df['city'].astype(str).str.title()
-        df['state_clean'] = df['state'].astype(str).str.upper()
+        df['city_clean'] = df['city'].fillna('').astype(str).str.title()
+        df['state_clean'] = df['state'].fillna('').astype(str).str.upper()
         
         # Rollup
         rollup = df.groupby(['name1', 'city_clean', 'state_clean']).agg({
             'service_code_info': merge_tags,
             'phone': 'first',
-            'orig_row': merge_rows
+            'orig_row': lambda x: ", ".join(x.astype(str))
         }).reset_index()
         
-        rollup['Location'] = rollup.apply(
-            lambda x: f"{x['city_clean']}, {x['state_clean']}" if x['city_clean'] else x['state_clean'], 
-            axis=1
-        )
+        rollup['Location'] = rollup.apply(lambda x: f"{x['city_clean']}, {x['state_clean']}" if x['city_clean'] else x['state_clean'], axis=1)
         
         # Pre-calculate category counts
         rollup['n_infra'] = rollup['service_code_info'].apply(lambda x: count_category(x, INFRA_CODES))
@@ -136,96 +115,61 @@ d, total_raw = load_data()
 # --- 4. SCORING CONTROL BOARD ---
 st.sidebar.title("🎛️ Scoring Controls")
 
-# Compact Expander
-with st.sidebar.expander("1. Care Types (Include)", expanded=True):
+with st.sidebar.expander("Care Types (Include)", expanded=True):
     inc_res = st.checkbox("Residential", value=True)
     inc_dtx = st.checkbox("Detox (DT)")
     inc_hosp = st.checkbox("Hospital / Inpatient")
 
-st.sidebar.divider()
-
-st.sidebar.subheader("2. Define 'Propensity'")
-# Weights
+st.sidebar.subheader("Define 'Propensity'")
 w_infra = st.sidebar.slider("Infrastructure Weight", 1, 10, 5)
 w_priv = st.sidebar.slider("Private Ownership Bonus", 0, 20, 10)
 w_clin = st.sidebar.slider("Clinical Depth Weight", 1, 10, 3)
 w_std = st.sidebar.slider("Standard Services Weight", 0, 5, 1)
 
 st.sidebar.divider()
-
-st.sidebar.subheader("3. Cutoff & Limits")
+st.sidebar.subheader("Cutoff & Limits")
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
-
-# Clean State Handling (No warnings)
 st.sidebar.number_input("Download Size (Rows)", key="max_show", min_value=1, step=1)
-
-st.sidebar.divider()
 exclude_gov = st.sidebar.toggle("Exclude Govt/VAMC", value=True)
 
-# --- 5. SCORING & WATERFALL ---
-count_unique = len(d)
-
-# Step 3: Care Type Fit
-d['Raw_Score'] = (
-    (d['n_infra'] * w_infra) + 
-    (d['n_clinical'] * w_clin) + 
-    (d['n_private'] * w_priv) + 
-    (d['n_standard'] * w_std)
-)
-current_max = d['Raw_Score'].max()
-if current_max == 0: current_max = 1
+# --- 5. SCORING ---
+d['Raw_Score'] = (d['n_infra'] * w_infra) + (d['n_clinical'] * w_clin) + (d['n_private'] * w_priv) + (d['n_standard'] * w_std)
+current_max = d['Raw_Score'].max() if d['Raw_Score'].max() > 0 else 1
 d['Propensity Score'] = ((d['Raw_Score'] / current_max) * 100).round(0).astype(int)
 
-d_services = d.copy()
+# --- 6. WATERFALL FILTERING ---
+count_unique = len(d)
+
 patterns = []
 if inc_res: patterns.append("RES|RL|RS")
 if inc_dtx: patterns.append("DT")
 if inc_hosp: patterns.append("HI|PSY")
 
-if patterns:
-    combined_pattern = "|".join(patterns)
-    d_services = d_services[d_services['service_code_info'].str.contains(combined_pattern, case=False, na=False)]
-else:
-    pass 
+d_services = d[d['service_code_info'].str.contains("|".join(patterns), case=False, na=False)] if patterns else d
 count_services = len(d_services)
 
-# Step 4: Score Fit
 d_scored = d_services[d_services['Propensity Score'] >= min_propensity]
 count_scored = len(d_scored)
 
-# Step 5: Final Qualified
-d_final = d_scored.copy()
-if exclude_gov:
-    d_final = d_final[~d_final['service_code_info'].str.contains('STG|FED|VAMC', case=False, na=False)]
+d_final = d_scored[~d_scored['service_code_info'].str.contains('STG|FED|VAMC', case=False, na=False)] if exclude_gov else d_scored
 count_final = len(d_final)
 
-# Sort
 d_final = d_final.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
 
-# --- 6. TIE DETECTION ---
+# --- 7. TIE DETECTION ---
 current_limit = int(st.session_state.max_show)
 count_ties = 0
-has_hidden_ties = False
-
 if count_final > current_limit:
-    cutoff_record = d_final.iloc[current_limit - 1]
-    cutoff_score = cutoff_record['Propensity Score']
-    
-    hidden_records = d_final.iloc[current_limit:]
-    tie_matches = hidden_records[hidden_records['Propensity Score'] == cutoff_score]
-    count_ties = len(tie_matches)
-    
-    if count_ties > 0:
-        has_hidden_ties = True
-        
+    cutoff_score = d_final.iloc[current_limit - 1]['Propensity Score']
+    count_ties = len(d_final.iloc[current_limit:][d_final.iloc[current_limit:]['Propensity Score'] == cutoff_score])
     display_df = d_final.head(current_limit)
 else:
     display_df = d_final
 
-# --- 7. OUTPUT ---
+# --- 8. OUTPUT ---
 st.title("📊 Scored Prospects")
 
-# METRICS
+# METRICS (Flush Waterfall Layout)
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("1. Universe", f"{total_raw:,}")
 c2.metric("2. Unique Locs", f"{count_unique:,}", delta=f"-{total_raw - count_unique:,}", delta_color="off")
@@ -233,18 +177,15 @@ c3.metric("3. Care Type Fit", f"{count_services:,}", delta=f"-{count_unique - co
 c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"-{count_services - count_scored:,}", delta_color="off")
 c5.metric("5. Total Qualified", f"{count_final:,}", delta=f"-{count_scored - count_final:,}", delta_color="off")
 
-# 6th Metric: ONLY APPEARS IF TIES EXIST
-if has_hidden_ties:
+if count_ties > 0:
     c6.metric("6. Hidden Ties", f"{count_ties:,}")
-    
-    def add_ties():
+    if c6.button("➕ Include Ties"):
         st.session_state.max_show += count_ties
-        
-    c6.button("➕ Include Ties", on_click=add_ties)
+        st.rerun()
 else:
     c6.empty()
 
-# Search
+# Table & Search
 c_search, c_state = st.columns(2)
 search = c_search.text_input("🔍 Search Facility Name").lower()
 states = c_state.multiselect("📍 Filter by State", options=sorted(d['state_clean'].unique()))
@@ -252,33 +193,5 @@ states = c_state.multiselect("📍 Filter by State", options=sorted(d['state_cle
 if search: display_df = display_df[display_df['name1'].str.lower().str.contains(search)]
 if states: display_df = display_df[display_df['state_clean'].isin(states)]
 
-# Table
-if display_df.empty:
-    st.warning("⚠️ No prospects found.")
-else:
-    output_df = display_df.reset_index(drop=True)
-    output_df.index = output_df.index + 1
-    output_df.index.name = "Rank"
-
-    output_df = output_df.rename(columns={
-        'name1': 'Facility Name', 
-        'phone': 'Phone',
-        'orig_row': 'Source'
-    })
-
-    st.dataframe(
-        output_df[['Facility Name', 'Location', 'Phone', 'Propensity Score', 'Source']], 
-        use_container_width=True,
-        height=550,
-        column_config={
-            "Source": st.column_config.TextColumn("Source Row(s)", width="small"),
-            "Propensity Score": st.column_config.ProgressColumn(
-                "Propensity",
-                format="%d",
-                min_value=0,
-                max_value=100,
-            ),
-        }
-    )
-
+st.dataframe(display_df[['name1', 'Location', 'phone', 'Propensity Score', 'orig_row']].rename(columns={'name1': 'Facility Name', 'phone': 'Phone', 'orig_row': 'Source'}), use_container_width=True, height=500, column_config={"Propensity Score": st.column_config.ProgressColumn("Propensity", format="%d", min_value=0, max_value=100)})
 st.download_button("📥 Download Scored List (CSV)", d_final.to_csv(index=False).encode('utf-8'), "Scored_Prospects.csv")
