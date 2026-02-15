@@ -5,494 +5,701 @@ import gspread
 import re
 from google.oauth2.service_account import Credentials
 
-# --- 1. CONFIG & STYLING ---
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 1. CONFIG & STYLING
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 st.set_page_config(page_title="Rounding Solution Targets", layout="wide")
 
 st.markdown("""
-    <style>
-    .block-container {padding-top: 1.5rem; padding-bottom: 0rem;}
-    [data-testid="stSidebar"] {width: 320px !important;}
-    [data-testid="stSidebarNav"] {display: none;}
-    [data-testid="stSidebar"] h1 {margin-top: -30px !important; margin-bottom: 0.5rem !important; font-size: 1.7rem !important;}
-    [data-testid="stSidebar"] h3 {margin-top: 0.4rem !important; margin-bottom: 0.1rem !important; font-size: 1.05rem !important; font-weight: 600;}
-    [data-testid="stSidebar"] hr {margin: 0.3rem 0px !important;}
-    .slider-label-row {display: flex; justify-content: space-between; font-size: 11px; color: #808495; margin-top: -22px; margin-bottom: 12px; padding: 0 5px;}
-    </style>
-    """, unsafe_allow_html=True)
+<style>
+.block-container {padding-top: 1.5rem; padding-bottom: 0rem;}
+[data-testid="stSidebar"] {width: 340px !important;}
+[data-testid="stSidebarNav"] {display: none;}
+[data-testid="stSidebar"] h1 {margin-top: -30px !important; margin-bottom: 0.5rem !important; font-size: 1.7rem !important;}
+[data-testid="stSidebar"] h3 {margin-top: 0.4rem !important; margin-bottom: 0.1rem !important; font-size: 1.05rem !important; font-weight: 600;}
+[data-testid="stSidebar"] hr {margin: 0.3rem 0px !important;}
+</style>
+""", unsafe_allow_html=True)
 
-# --- 2. SESSION STATE ---
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 2. SESSION STATE
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 if 'max_show' not in st.session_state:
     st.session_state.max_show = 100
 
-# --- 3. SCORING DEFINITIONS ---
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 3. SCORING DEFINITIONS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# Service code categories for scoring
-LOC_INDICATORS = {
+# --- Service Code Dictionaries ---
+
+# Level of Care indicators (used for setting classification + scoring)
+LOC_CODES = {
     'PSYCH_HOSPITAL': ['PSYH'],
-    'HOSPITAL_INPATIENT': ['HI'],  # Will use word boundary regex
+    'INPATIENT_PSYCH_UNIT': ['IPSY'],
+    'HOSPITAL_INPATIENT': ['HI'],       # word-boundary regex required
+    'RTC': ['RTCA', 'RTCC'],            # Residential Treatment Centers
     'RESIDENTIAL': ['RES', 'RL', 'RS'],
-    'DETOX': ['DT', 'ADTX', 'BDTX', 'CDTX', 'MDTX', 'ODTX']
+    'DETOX': ['DT', 'ADTX', 'BDTX', 'CDTX', 'MDTX', 'ODTX'],
 }
 
-CLINICAL_SOPHISTICATION = {
-    'MAT_MEDICATIONS': ['METH', 'BERI', 'NXN', 'VTRL', 'BWN', 'BWON', 'BSDM'],  # 4 pts each
-    'PSYCH_SERVICES': ['MMD', 'ANTPYCH', 'LABT', 'MHPA'],  # 3 pts each
-    'MEDICAL_SERVICES': ['MSRV', 'LABT', 'MM', 'UB', 'MHPA', 'IPC']  # 2 pts each
+# MAT medications (tiered scoring)
+MAT_MEDICATIONS = ['METH', 'BERI', 'NXN', 'VTRL', 'BWN', 'BWON', 'BSDM']
+
+# Individual antipsychotic medications (tiered scoring by breadth)
+ANTIPSYCHOTICS = [
+    'CHLOR', 'DROPE', 'FLUPH', 'HALOP', 'LOXAP', 'PERPH', 'PIMOZ', 'PROCH',
+    'THIOT', 'THIOR', 'TRIFL', 'ARIPI', 'ASENA', 'BREXP', 'CARIP', 'CLOZA',
+    'ILOPE', 'LURAS', 'OLANZ', 'OLANZF', 'PALIP', 'QUETI', 'RISPE', 'ZIPRA'
+]
+
+# Advanced treatment modalities
+ADVANCED_THERAPIES = ['DBT', 'EMDR', 'ECT', 'TMS', 'KIT']
+
+# Sentinel event / acuity signals
+ACUITY_CODES = {
+    'COOCCURRING': ['SUMH'],
+    'SMI_PROGRAMS': ['SMI'],
+    'SUICIDE_PREVENTION': ['SPS'],
+    'DETOX': ['DT', 'ADTX', 'BDTX', 'CDTX', 'MDTX', 'ODTX'],
+    'CRISIS_SERVICES': ['CIT', 'PEON', 'PEOFF', 'WI'],
+    'FIRST_EPISODE_PSYCHOSIS': ['PEFP'],
 }
 
-ACUITY_INDICATORS = {
-    'COOCCURRING': ['SUMH'],  # 10 pts
-    'SMI_PROGRAMS': ['SMI'],  # 8 pts
-    'DETOX': ['DT', 'ADTX', 'BDTX', 'CDTX', 'MDTX', 'ODTX'],  # 7 pts
-    'CRISIS_SERVICES': ['CIT', 'PEON', 'PEOFF', 'WI']  # 5 pts
+# Institutional quality signals
+QUALITY_CODES = {
+    'JOINT_COMMISSION': ['JC'],
+    'CARF': ['CARF'],
+    'NALOXONE_OD_ED': ['NOE'],
+    'DISCHARGE_PLANNING': ['DP'],
+    'OUTCOME_FOLLOWUP': ['OFD'],
+    'METABOLIC_MONITORING': ['MST'],
+    'INTEGRATED_PRIMARY_CARE': ['IPC'],
+    'LAB_TESTING': ['LABT'],
 }
 
+# Government facility codes (for exclusion)
 GOVT_CODES = ['FED', 'STG', 'VAMC', 'LCCG', 'GVT', 'STLG', 'TBG']
 
-# --- 4. SCORING FUNCTIONS ---
+# Ownership codes
+OWNERSHIP_CODES = {'FOR_PROFIT': ['PVTP'], 'NON_PROFIT': ['PVTN']}
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 4. UTILITY FUNCTIONS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def has_code(codes_str, code_list):
-    """Check if any code from list exists in codes string"""
-    codes_upper = str(codes_str).upper()
-    return any(code in codes_upper for code in code_list)
+    """Check if any code from list exists in service code string."""
+    c = str(codes_str).upper()
+    return any(code in c for code in code_list)
+
+def has_code_wb(codes_str, code):
+    """Check for a code using word-boundary regex (for short codes like HI, JC)."""
+    return bool(re.search(rf'\b{code}\b', str(codes_str).upper()))
 
 def count_codes(codes_str, code_list):
-    """Count how many codes from list exist in codes string"""
-    codes_upper = str(codes_str).upper()
-    return sum(1 for code in code_list if code in codes_upper)
-
-def calculate_loc_score(row, weights=None):
-    """Calculate Level of Care score (0-40 points)"""
-    if weights is None:
-        weights = {'psych': 40, 'hosp': 35, 'res_dtx': 30, 'res': 25}
-    
-    codes = str(row['service_code_info']).upper()
-    
-    # Check for psychiatric hospital
-    if 'PSYH' in codes:
-        return weights['psych']
-    
-    # Check for hospital inpatient (need word boundary to avoid HID, HIT, etc.)
-    # Service codes are separated by spaces or asterisks like "SA * HI * OP"
-    if re.search(r'\bHI\b', codes):
-        return weights['hosp']
-    
-    # Check for residential
-    has_residential = has_code(codes, LOC_INDICATORS['RESIDENTIAL'])
-    has_detox = has_code(codes, LOC_INDICATORS['DETOX'])
-    
-    if has_residential:
-        return weights['res_dtx'] if has_detox else weights['res']
-    elif has_detox:
-        return 20
-    
-    return 0  # Outpatient only
-
-def calculate_sophistication_score(row, weights=None):
-    """Calculate Clinical Sophistication score (0-30 points)"""
-    if weights is None:
-        weights = {'mat_basic': 10, 'mat_standard': 15, 'mat_comprehensive': 20, 'psych': 3, 'med': 2}
-    
-    codes = str(row['service_code_info']).upper()
-    
-    # Tiered MAT scoring (instead of linear per-med)
-    mat_count = count_codes(codes, CLINICAL_SOPHISTICATION['MAT_MEDICATIONS'])
-    if mat_count == 0:
-        mat_score = 0
-    elif mat_count <= 2:
-        mat_score = weights['mat_basic']  # Basic MAT: 10 pts
-    elif mat_count <= 4:
-        mat_score = weights['mat_standard']  # Standard MAT: 15 pts
-    else:
-        mat_score = weights['mat_comprehensive']  # Comprehensive MAT: 20 pts
-    
-    psych_count = count_codes(codes, CLINICAL_SOPHISTICATION['PSYCH_SERVICES'])
-    medical_count = count_codes(codes, CLINICAL_SOPHISTICATION['MEDICAL_SERVICES'])
-    
-    score = mat_score + (psych_count * weights['psych']) + (medical_count * weights['med'])
-    
-    return min(30, score)  # Cap at 30
-
-def calculate_acuity_score(row, weights=None, use_inference=True):
-    """Calculate Risk/Acuity score (0-30 points) with optional fuzzy inference"""
-    if weights is None:
-        weights = {'cooccur': 10, 'smi': 8, 'detox': 7, 'crisis': 5}
-    
-    codes = str(row['service_code_info']).upper()
-    
-    score = 0
-    inferred_points = 0
-    
-    if has_code(codes, ACUITY_INDICATORS['COOCCURRING']):
-        score += weights['cooccur']
-    
-    # SMI - use inference if enabled
-    if use_inference:
-        has_smi, smi_source = infer_smi_capability(row)
-        if has_smi:
-            score += weights['smi']
-            if smi_source != 'explicit':
-                inferred_points += weights['smi']
-    else:
-        if has_code(codes, ACUITY_INDICATORS['SMI_PROGRAMS']):
-            score += weights['smi']
-    
-    if has_code(codes, ACUITY_INDICATORS['DETOX']):
-        score += weights['detox']
-    
-    # Crisis - use inference if enabled
-    if use_inference:
-        has_crisis, crisis_source = infer_crisis_capability(row)
-        if has_crisis:
-            score += weights['crisis']
-            if crisis_source != 'explicit':
-                inferred_points += weights['crisis']
-    else:
-        if has_code(codes, ACUITY_INDICATORS['CRISIS_SERVICES']):
-            score += weights['crisis']
-    
-    return min(30, score), inferred_points  # Return score and inferred points
-
-def get_setting_type(row):
-    """Determine primary setting type for display"""
-    codes = str(row['service_code_info']).upper()
-    
-    if 'PSYH' in codes:
-        return 'Psychiatric Hospital'
-    
-    # Use regex for HI detection (word boundary)
-    if re.search(r'\bHI\b', codes):
-        return 'Hospital Inpatient'
-    
-    has_residential = has_code(codes, LOC_INDICATORS['RESIDENTIAL'])
-    has_detox = has_code(codes, LOC_INDICATORS['DETOX'])
-    
-    if has_residential and has_detox:
-        return 'Residential + Detox'
-    elif has_residential:
-        return 'Residential'
-    elif has_detox:
-        return 'Detox Only'
-    
-    return 'Outpatient'
-
-def infer_smi_capability(row):
-    """Use fuzzy logic to infer SMI capability even if not explicitly coded"""
-    codes = str(row['service_code_info']).upper()
-    
-    # Explicit SMI code
-    if 'SMI' in codes:
-        return True, 'explicit'
-    
-    # Psychiatric hospitals by definition treat SMI
-    if 'PSYH' in codes:
-        return True, 'inferred_psych'
-    
-    # Hospital inpatient with co-occurring likely treats SMI
-    if re.search(r'\bHI\b', codes) and 'SUMH' in codes:
-        return True, 'inferred_hospital'
-    
-    # MH facility type with residential care
-    if row.get('Facility_Type') == 'MH' and has_code(codes, LOC_INDICATORS['RESIDENTIAL']):
-        return True, 'inferred_residential'
-    
-    return False, 'none'
-
-def infer_crisis_capability(row):
-    """Use fuzzy logic to infer crisis services"""
-    codes = str(row['service_code_info']).upper()
-    
-    # Explicit crisis codes
-    if has_code(codes, ACUITY_INDICATORS['CRISIS_SERVICES']):
-        return True, 'explicit'
-    
-    # Psychiatric hospitals have crisis capability
-    if 'PSYH' in codes:
-        return True, 'inferred_psych'
-    
-    # Hospital inpatient with detox = crisis capability
-    if re.search(r'\bHI\b', codes) and has_code(codes, LOC_INDICATORS['DETOX']):
-        return True, 'inferred_hospital'
-    
-    # 24hr residential with co-occurring + detox
-    if has_code(codes, LOC_INDICATORS['RESIDENTIAL']) and 'SUMH' in codes and has_code(codes, LOC_INDICATORS['DETOX']):
-        return True, 'inferred_residential'
-    
-    return False, 'none'
+    """Count how many codes from list exist in service code string."""
+    c = str(codes_str).upper()
+    return sum(1 for code in code_list if code in c)
 
 def merge_tags(series):
-    """Merge service code tags from multiple rows"""
+    """Merge service code tags from multiple rows, dedup and sort."""
     all_tags = " * ".join(series.astype(str)).split('*')
-    unique_tags = sorted(list(set([t.strip() for t in all_tags if t.strip()])))
+    unique_tags = sorted(set(t.strip() for t in all_tags if t.strip()))
     return " * ".join(unique_tags)
 
-# --- 5. DATA LOADING ---
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 5. SETTING CLASSIFICATION
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def classify_setting(codes):
+    """Classify facility into care setting with finer granularity."""
+    c = str(codes).upper()
+
+    # Highest → lowest acuity
+    if 'PSYH' in c:
+        return 'Psychiatric Hospital'
+    if 'IPSY' in c:
+        return 'Inpatient Psych Unit'
+    if re.search(r'\bHI\b', c):
+        return 'Hospital Inpatient'
+    if 'RTCA' in c or 'RTCC' in c:
+        return 'Residential Treatment Center'
+
+    has_res = has_code(c, LOC_CODES['RESIDENTIAL'])
+    has_dtx = has_code(c, LOC_CODES['DETOX'])
+
+    if has_res and has_dtx:
+        return 'Residential + Detox'
+    if has_res:
+        return 'Residential'
+    if has_dtx:
+        return 'Detox Only'
+
+    return 'Outpatient'
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 6. FUZZY INFERENCE ENGINE
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def infer_smi(codes, setting, facility_type, antipsych_count):
+    """Infer SMI treatment capability. Returns (has_smi, source, confidence_penalty)."""
+    c = str(codes).upper()
+
+    if has_code(c, ['SMI']):
+        return True, 'explicit', 0
+
+    # Psych hospitals treat SMI by definition
+    if setting == 'Psychiatric Hospital':
+        return True, 'inferred_psych_hospital', 1
+    if setting == 'Inpatient Psych Unit':
+        return True, 'inferred_inpatient_psych', 2
+
+    # Hospital inpatient + co-occurring
+    if setting == 'Hospital Inpatient' and 'SUMH' in c:
+        return True, 'inferred_hospital_cooccur', 3
+
+    # MH facility with residential care
+    if 'MH' in str(facility_type) and setting in ('Residential', 'Residential + Detox', 'Residential Treatment Center'):
+        return True, 'inferred_mh_residential', 3
+
+    # Facility prescribing 5+ antipsychotics likely treats SMI
+    if antipsych_count >= 5:
+        return True, 'inferred_antipsych_breadth', 4
+
+    return False, 'none', 0
+
+def infer_crisis(codes, setting):
+    """Infer crisis services capability. Returns (has_crisis, source, confidence_penalty)."""
+    c = str(codes).upper()
+
+    if has_code(c, ACUITY_CODES['CRISIS_SERVICES']):
+        return True, 'explicit', 0
+
+    # Psych hospitals have crisis capability
+    if setting == 'Psychiatric Hospital':
+        return True, 'inferred_psych_hospital', 1
+    if setting == 'Inpatient Psych Unit':
+        return True, 'inferred_inpatient_psych', 2
+
+    # Hospital inpatient + detox
+    if setting == 'Hospital Inpatient' and has_code(c, LOC_CODES['DETOX']):
+        return True, 'inferred_hospital_detox', 3
+
+    # Residential + co-occurring + detox
+    if has_code(c, LOC_CODES['RESIDENTIAL']) and 'SUMH' in c and has_code(c, LOC_CODES['DETOX']):
+        return True, 'inferred_res_cooccur_detox', 4
+
+    return False, 'none', 0
+
+def infer_suicide_prevention(codes, setting, has_smi_flag):
+    """Infer suicide prevention services. Returns (has_sps, source, confidence_penalty)."""
+    c = str(codes).upper()
+
+    if has_code_wb(c, 'SPS'):
+        return True, 'explicit', 0
+
+    # Psych hospitals / inpatient psych units
+    if setting in ('Psychiatric Hospital', 'Inpatient Psych Unit'):
+        return True, 'inferred_psych_setting', 1
+
+    # Hospital inpatient with SMI
+    if setting == 'Hospital Inpatient' and has_smi_flag:
+        return True, 'inferred_hospital_smi', 3
+
+    return False, 'none', 0
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 7. SCORING FUNCTIONS — 4 PILLARS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Default weights (exposed in Advanced sidebar)
+DEFAULT_WEIGHTS = {
+    # --- Level of Care (0-30) ---
+    'loc_psych_hospital': 30,
+    'loc_inpatient_psych': 28,
+    'loc_hospital_inpatient': 25,
+    'loc_rtc': 22,
+    'loc_residential_detox': 20,
+    'loc_residential': 17,
+    'loc_detox_only': 14,
+
+    # --- Clinical Complexity (0-30) ---
+    'mat_none': 0,
+    'mat_basic': 6,       # 1-2 meds
+    'mat_standard': 10,   # 3-4 meds
+    'mat_comprehensive': 14,  # 5+ meds
+    'antipsych_none': 0,
+    'antipsych_basic': 3,    # 1-4 meds
+    'antipsych_moderate': 5, # 5-9 meds
+    'antipsych_broad': 7,    # 10+ meds
+    'advanced_therapy_each': 2,  # per modality, cap 6
+    'med_management': 3,     # MMD
+
+    # --- Sentinel Event Risk (0-25) ---
+    'risk_cooccurring': 6,
+    'risk_smi': 5,
+    'risk_suicide_prevention': 5,
+    'risk_detox': 4,
+    'risk_crisis': 3,
+    'risk_first_episode': 2,
+
+    # --- Institutional Quality (0-15) ---
+    'quality_jc': 5,
+    'quality_carf': 3,
+    'quality_noe': 2,
+    'quality_discharge': 2,
+    'quality_followup': 1,
+    'quality_monitoring': 2,  # MST or IPC or LABT (any combo)
+}
+
+PILLAR_CAPS = {
+    'loc': 30,
+    'clinical': 30,
+    'risk': 25,
+    'quality': 15,
+}
+
+
+def score_level_of_care(setting, w):
+    """Score based on care setting (0-30)."""
+    mapping = {
+        'Psychiatric Hospital': w['loc_psych_hospital'],
+        'Inpatient Psych Unit': w['loc_inpatient_psych'],
+        'Hospital Inpatient': w['loc_hospital_inpatient'],
+        'Residential Treatment Center': w['loc_rtc'],
+        'Residential + Detox': w['loc_residential_detox'],
+        'Residential': w['loc_residential'],
+        'Detox Only': w['loc_detox_only'],
+    }
+    return min(PILLAR_CAPS['loc'], mapping.get(setting, 0))
+
+
+def score_clinical_complexity(codes, w):
+    """Score clinical complexity (0-30): MAT tier + antipsychotic breadth + advanced therapies + MMD."""
+    c = str(codes).upper()
+
+    # MAT tier
+    mat_count = count_codes(c, MAT_MEDICATIONS)
+    if mat_count == 0:
+        mat_score = w['mat_none']
+    elif mat_count <= 2:
+        mat_score = w['mat_basic']
+    elif mat_count <= 4:
+        mat_score = w['mat_standard']
+    else:
+        mat_score = w['mat_comprehensive']
+
+    # Antipsychotic breadth
+    ap_count = count_codes(c, ANTIPSYCHOTICS)
+    if ap_count == 0:
+        ap_score = w['antipsych_none']
+    elif ap_count <= 4:
+        ap_score = w['antipsych_basic']
+    elif ap_count <= 9:
+        ap_score = w['antipsych_moderate']
+    else:
+        ap_score = w['antipsych_broad']
+
+    # Advanced therapies (2 pts each, cap 6)
+    adv_count = sum(1 for t in ADVANCED_THERAPIES if (
+        re.search(rf'\b{t}\b', c) if len(t) <= 3 else t in c
+    ))
+    adv_score = min(6, adv_count * w['advanced_therapy_each'])
+
+    # Medication management (MMD)
+    mmd_score = w['med_management'] if has_code_wb(c, 'MMD') else 0
+
+    return min(PILLAR_CAPS['clinical'], mat_score + ap_score + adv_score + mmd_score), mat_count, ap_count, adv_count
+
+
+def score_sentinel_risk(codes, setting, facility_type, antipsych_count, w):
+    """Score sentinel event risk (0-25) with fuzzy inference. Returns (score, inferred_penalty)."""
+    c = str(codes).upper()
+    score = 0
+    inferred_penalty = 0
+
+    # Co-occurring
+    if has_code(c, ACUITY_CODES['COOCCURRING']):
+        score += w['risk_cooccurring']
+
+    # SMI (with inference)
+    has_smi, smi_src, smi_pen = infer_smi(c, setting, facility_type, antipsych_count)
+    if has_smi:
+        score += w['risk_smi']
+        inferred_penalty += smi_pen
+
+    # Suicide prevention (with inference)
+    has_sps, sps_src, sps_pen = infer_suicide_prevention(c, setting, has_smi)
+    if has_sps:
+        score += w['risk_suicide_prevention']
+        inferred_penalty += sps_pen
+
+    # Detox
+    if has_code(c, ACUITY_CODES['DETOX']):
+        score += w['risk_detox']
+
+    # Crisis (with inference)
+    has_crisis, crisis_src, crisis_pen = infer_crisis(c, setting)
+    if has_crisis:
+        score += w['risk_crisis']
+        inferred_penalty += crisis_pen
+
+    # First-episode psychosis
+    if has_code(c, ACUITY_CODES['FIRST_EPISODE_PSYCHOSIS']):
+        score += w['risk_first_episode']
+
+    capped = min(PILLAR_CAPS['risk'], score)
+    return capped, inferred_penalty, has_smi, smi_src, has_sps, sps_src, has_crisis, crisis_src
+
+
+def score_institutional_quality(codes, w):
+    """Score institutional quality signals (0-15)."""
+    c = str(codes).upper()
+    score = 0
+
+    if has_code_wb(c, 'JC'):
+        score += w['quality_jc']
+    if has_code(c, QUALITY_CODES['CARF']):
+        score += w['quality_carf']
+    if has_code_wb(c, 'NOE'):
+        score += w['quality_noe']
+    if has_code_wb(c, 'DP'):
+        score += w['quality_discharge']
+    if has_code_wb(c, 'OFD'):
+        score += w['quality_followup']
+
+    # Medical monitoring: any of MST, IPC, LABT
+    has_monitoring = (
+        has_code_wb(c, 'MST') or
+        has_code_wb(c, 'IPC') or
+        has_code(c, QUALITY_CODES['LAB_TESTING'])
+    )
+    if has_monitoring:
+        score += w['quality_monitoring']
+
+    return min(PILLAR_CAPS['quality'], score)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 8. GAP ANALYSIS & CONFIDENCE
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def calculate_gaps(row):
+    """Identify what's missing relative to a max-score profile."""
+    gaps = []
+
+    # Clinical gaps
+    if row['mat_count'] == 0:
+        gaps.append('MAT')
+    elif row['mat_count'] < 3:
+        gaps.append('MAT↑')
+    if row['antipsych_count'] == 0 and row['setting_type'] not in ('Residential', 'Detox Only'):
+        gaps.append('AP')
+    if row['adv_therapy_count'] == 0:
+        gaps.append('Adv Tx')
+
+    # Risk gaps
+    if not row['has_cooccurring']:
+        gaps.append('COD')
+    if not row['has_smi']:
+        gaps.append('SMI')
+    if not row['has_sps']:
+        gaps.append('SPS')
+    if not row['has_detox']:
+        gaps.append('DTX')
+    if not row['has_crisis']:
+        gaps.append('Crisis')
+
+    # Quality gaps
+    if not row['has_jc'] and not row['has_carf']:
+        gaps.append('Accred')
+
+    return ' · '.join(gaps) if gaps else '—'
+
+
+def confidence_score(inferred_penalty):
+    """Convert inference penalty to a 0-100 confidence score."""
+    # Max realistic penalty ~12 (SMI 4 + Crisis 4 + SPS 3 + 1)
+    # Scale so 0 penalty = 100%, 12+ penalty = ~55%
+    return max(55, int(100 - (inferred_penalty * 3.75)))
+
+
+def confidence_label(conf):
+    if conf >= 90:
+        return f'✓ {conf}%'
+    elif conf >= 75:
+        return f'~ {conf}%'
+    else:
+        return f'⚠ {conf}%'
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 9. DATA LOADING & SCORING PIPELINE
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @st.cache_data(ttl=3600)
-def load_data():
-    """Load data from Google Sheet and calculate propensity scores"""
-    
-    # Connect to Google Sheets
+def load_and_score():
+    """Load SAMHSA data from Google Sheets, dedup, and score all facilities."""
+
+    # --- Connect ---
     scope = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
     creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
     client = gspread.authorize(creds)
-    
+
     try:
         sheet = client.open("SAMHSA_Master_Data").sheet1
-        df = pd.DataFrame(sheet.get_all_records())
-        df['orig_row'] = df.index + 2
-        
-        total_raw = len(df)
-        
-        # Clean location fields
-        df['city_clean'] = df['city'].fillna('').astype(str).str.title()
-        df['state_clean'] = df['state'].fillna('').astype(str).str.upper()
-        
-        # Calculate scores for each row
-        df['loc_score'] = df.apply(calculate_loc_score, axis=1)
-        df['sophistication_score'] = df.apply(calculate_sophistication_score, axis=1)
-        
-        # Acuity score with inference - returns (score, inferred_points)
-        acuity_results = df.apply(calculate_acuity_score, axis=1, result_type='expand')
-        df['acuity_score'] = acuity_results[0]
-        df['inferred_points'] = acuity_results[1]
-        
-        df['setting_type'] = df.apply(get_setting_type, axis=1)
-        
-        # Check if government facility
-        df['is_govt'] = df['service_code_info'].apply(lambda x: has_code(x, GOVT_CODES))
-        
-        # Calculate total propensity score
-        df['score'] = (
-            df['loc_score'] + 
-            df['sophistication_score'] + 
-            df['acuity_score']
-        ).round(0).astype(int)
-        
-        # Data confidence score (0-100%)
-        # Higher confidence = more explicit codes, less inference needed
-        df['data_confidence'] = ((30 - df['inferred_points']) / 30 * 100).round(0).astype(int)
-        
-        # Get key indicators for display and filtering
-        df['has_cooccurring'] = df['service_code_info'].apply(
-            lambda x: has_code(x, ACUITY_INDICATORS['COOCCURRING'])
-        )
-        
-        # Use inference for has_smi and has_crisis
-        smi_results = df.apply(infer_smi_capability, axis=1, result_type='expand')
-        df['has_smi'] = smi_results[0]
-        df['smi_source'] = smi_results[1]
-        
-        crisis_results = df.apply(infer_crisis_capability, axis=1, result_type='expand')
-        df['has_crisis'] = crisis_results[0]
-        df['crisis_source'] = crisis_results[1]
-        
-        df['has_detox'] = df['service_code_info'].apply(
-            lambda x: has_code(x, ACUITY_INDICATORS['DETOX'])
-        )
-        df['mat_count'] = df['service_code_info'].apply(
-            lambda x: count_codes(x, CLINICAL_SOPHISTICATION['MAT_MEDICATIONS'])
-        )
-        df['has_mat'] = df['mat_count'] > 0
-        
-        # Roll up by location (keep highest scoring record for each name+city+state)
-        rollup = df.sort_values('score', ascending=False).groupby(
-            ['name1', 'city_clean', 'state_clean'], 
-            as_index=False
-        ).agg({
+        raw = pd.DataFrame(sheet.get_all_records())
+        raw['orig_row'] = raw.index + 2
+        total_raw = len(raw)
+
+        # --- Clean ---
+        raw['city_clean'] = raw['city'].fillna('').astype(str).str.title()
+        raw['state_clean'] = raw['state'].fillna('').astype(str).str.upper()
+
+        # --- Dedup by name + city + state, MERGE service codes first ---
+        rollup = raw.groupby(['name1', 'city_clean', 'state_clean'], as_index=False).agg({
             'service_code_info': merge_tags,
             'phone': 'first',
+            'street1': 'first',
+            'zip': 'first',
             'orig_row': lambda x: ", ".join(x.astype(str)),
-            'score': 'max',
-            'loc_score': 'max',
-            'sophistication_score': 'max',
-            'acuity_score': 'max',
-            'inferred_points': 'max',
-            'data_confidence': 'min',  # Use most conservative confidence
-            'setting_type': 'first',
-            'Facility_Type': lambda x: ' & '.join(sorted(set(x))) if 'Facility_Type' in df.columns else 'Unknown',
-            'is_govt': 'max',
-            'has_cooccurring': 'max',
-            'has_smi': 'max',
-            'smi_source': 'first',
-            'has_crisis': 'max',
-            'crisis_source': 'first',
-            'has_detox': 'max',
-            'mat_count': 'max',
-            'has_mat': 'max'
+            'Facility_Type': lambda x: ' & '.join(sorted(set(x.dropna().astype(str)))),
         })
-        
-        # Create location field
+
+        # --- Classify AFTER merging (merged codes may upgrade a setting) ---
+        rollup['setting_type'] = rollup['service_code_info'].apply(classify_setting)
+
+        # --- Government flag ---
+        rollup['is_govt'] = rollup['service_code_info'].apply(lambda x: has_code(x, GOVT_CODES))
+
+        # --- Ownership ---
+        rollup['is_for_profit'] = rollup['service_code_info'].apply(lambda x: has_code(x, OWNERSHIP_CODES['FOR_PROFIT']))
+        rollup['is_non_profit'] = rollup['service_code_info'].apply(lambda x: has_code(x, OWNERSHIP_CODES['NON_PROFIT']))
+
+        # --- Score all four pillars ---
+        w = DEFAULT_WEIGHTS
+
+        # Pillar 1: Level of Care
+        rollup['loc_score'] = rollup['setting_type'].apply(lambda s: score_level_of_care(s, w))
+
+        # Pillar 2: Clinical Complexity
+        clinical_results = rollup['service_code_info'].apply(lambda c: score_clinical_complexity(c, w))
+        rollup['clinical_score'] = clinical_results.apply(lambda x: x[0])
+        rollup['mat_count'] = clinical_results.apply(lambda x: x[1])
+        rollup['antipsych_count'] = clinical_results.apply(lambda x: x[2])
+        rollup['adv_therapy_count'] = clinical_results.apply(lambda x: x[3])
+
+        # Pillar 3: Sentinel Event Risk (with fuzzy inference)
+        risk_results = rollup.apply(
+            lambda row: score_sentinel_risk(
+                row['service_code_info'], row['setting_type'],
+                row['Facility_Type'], row['antipsych_count'], w
+            ), axis=1, result_type='expand'
+        )
+        rollup['risk_score'] = risk_results[0]
+        rollup['inferred_penalty'] = risk_results[1]
+        rollup['has_smi'] = risk_results[2]
+        rollup['smi_source'] = risk_results[3]
+        rollup['has_sps'] = risk_results[4]
+        rollup['sps_source'] = risk_results[5]
+        rollup['has_crisis'] = risk_results[6]
+        rollup['crisis_source'] = risk_results[7]
+
+        # Pillar 4: Institutional Quality
+        rollup['quality_score'] = rollup['service_code_info'].apply(lambda c: score_institutional_quality(c, w))
+
+        # --- Composite ---
+        rollup['score'] = (
+            rollup['loc_score'] +
+            rollup['clinical_score'] +
+            rollup['risk_score'] +
+            rollup['quality_score']
+        ).clip(upper=100).astype(int)
+
+        # --- Confidence ---
+        rollup['data_confidence'] = rollup['inferred_penalty'].apply(confidence_score)
+
+        # --- Derived flags for filtering ---
+        rollup['has_cooccurring'] = rollup['service_code_info'].apply(lambda x: has_code(x, ACUITY_CODES['COOCCURRING']))
+        rollup['has_mat'] = rollup['mat_count'] > 0
+        rollup['has_detox'] = rollup['service_code_info'].apply(lambda x: has_code(x, ACUITY_CODES['DETOX']))
+        rollup['has_jc'] = rollup['service_code_info'].apply(lambda x: has_code_wb(x, 'JC'))
+        rollup['has_carf'] = rollup['service_code_info'].apply(lambda x: has_code(x, QUALITY_CODES['CARF']))
+        rollup['has_accreditation'] = rollup['has_jc'] | rollup['has_carf']
+
+        # --- Location ---
         rollup['Location'] = rollup.apply(
-            lambda x: f"{x['city_clean']}, {x['state_clean']}" if x['city_clean'] else x['state_clean'], 
+            lambda x: f"{x['city_clean']}, {x['state_clean']}" if x['city_clean'] else x['state_clean'],
             axis=1
         )
-        
+
         return rollup, total_raw
-        
+
     except Exception as e:
         st.error(f"❌ Connection Failed: {e}")
         st.stop()
 
-# Load data
-d, total_raw = load_data()
+
+# --- Load ---
+d, total_raw = load_and_score()
 count_unique = len(d)
 
-# --- 6. SIDEBAR CONTROL BOARD ---
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 10. SIDEBAR
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 st.sidebar.title("🎯 Target Filters")
 
+# --- Care Settings ---
 with st.sidebar.expander("🏥 Care Settings", expanded=True):
-    inc_psych_hosp = st.checkbox("Psychiatric Hospitals", value=True)
-    inc_hosp_inpt = st.checkbox("Hospital Inpatient", value=True)
-    inc_residential = st.checkbox("Residential (24hr)", value=True)
+    inc_psych = st.checkbox("Psychiatric Hospitals", value=True)
+    inc_ipsy = st.checkbox("Inpatient Psych Units", value=True)
+    inc_hosp = st.checkbox("Hospital Inpatient", value=True)
+    inc_rtc = st.checkbox("Residential Treatment Centers", value=True)
+    inc_res = st.checkbox("Residential (24hr)", value=True)
     inc_detox = st.checkbox("Detox Settings", value=False)
 
 st.sidebar.divider()
 
+# --- Score Thresholds ---
 with st.sidebar.expander("🎚️ Minimum Scores", expanded=False):
-    min_loc = st.slider("Level of Care", 0, 40, 25, 5)
-    min_clinical = st.slider("Clinical Capabilities", 0, 30, 0, 5)
-    min_acuity = st.slider("Risk/Acuity", 0, 30, 0, 5)
-    min_total_score = st.slider("Total Score", 0, 100, 50, 5)
+    min_total = st.slider("Total Score", 0, 100, 40, 5)
+    min_loc = st.slider("Level of Care", 0, 30, 0, 5)
+    min_clinical = st.slider("Clinical Complexity", 0, 30, 0, 5)
+    min_risk = st.slider("Sentinel Event Risk", 0, 25, 0, 5)
+    min_quality = st.slider("Institutional Quality", 0, 15, 0, 1)
 
 st.sidebar.divider()
 
+# --- Treatment Filters ---
 with st.sidebar.expander("💊 Other Treatments", expanded=False):
-    require_cooccurring = st.checkbox("Co-Occurring Disorders (COD)", value=False)
-    
+    require_cod = st.checkbox("Co-Occurring Disorders (COD)", value=False)
     mat_filter = st.selectbox(
         "Medication-Assisted Therapy (MAT)",
-        options=["Any/No Filter", "Has MAT (1+ meds)", "Standard MAT (3+ meds)", "Comprehensive MAT (5+ meds)"],
-        index=0
+        ["Any / No Filter", "Has MAT (1+ meds)", "Standard MAT (3+ meds)", "Comprehensive MAT (5+ meds)"],
+        index=0,
     )
-    
     require_smi = st.checkbox("Severe Mental Illness (SMI)", value=False)
 
 st.sidebar.divider()
 
-exclude_govt = st.sidebar.toggle("Exclude Government Facilities", value=True)
+# --- Quality Filters ---
+with st.sidebar.expander("🏅 Institutional Quality", expanded=False):
+    require_accred = st.checkbox("Require Accreditation (JC or CARF)", value=False)
 
 st.sidebar.divider()
 
+# --- Toggles ---
+exclude_govt = st.sidebar.toggle("Exclude Government Facilities", value=True)
+
+st.sidebar.divider()
 st.sidebar.number_input("Display Row Count", key="max_show", min_value=1, step=1)
 
-# Advanced Settings (collapsed)
-with st.sidebar.expander("⚙️ Advanced - Adjust Scoring Weights", expanded=False):
-    st.markdown("**Level of Care Weights**")
-    w_psych = st.number_input("Psychiatric Hospital", 0, 100, 40, 5, key="w_psych")
-    w_hosp = st.number_input("Hospital Inpatient", 0, 100, 35, 5, key="w_hosp")
-    w_res_dtx = st.number_input("Residential + Detox", 0, 100, 30, 5, key="w_res_dtx")
-    w_res = st.number_input("Residential", 0, 100, 25, 5, key="w_res")
-    
-    st.markdown("**Clinical Sophistication Weights**")
-    st.caption("MAT Scoring (Tiered)")
-    w_mat_basic = st.number_input("Basic MAT (1-2 meds)", 0, 30, 10, 1, key="w_mat_basic")
-    w_mat_standard = st.number_input("Standard MAT (3-4 meds)", 0, 30, 15, 1, key="w_mat_standard")
-    w_mat_comp = st.number_input("Comprehensive MAT (5+ meds)", 0, 30, 20, 1, key="w_mat_comp")
-    st.caption("Other Clinical Services")
-    w_psych_svc = st.number_input("Psych Services (each)", 0, 10, 3, 1, key="w_psych_svc")
-    w_med = st.number_input("Medical Services (each)", 0, 10, 2, 1, key="w_med")
-    
-    st.markdown("**Risk/Acuity Weights**")
-    w_cooccur = st.number_input("Co-occurring", 0, 30, 10, 1, key="w_cooccur")
-    w_smi = st.number_input("SMI Programs", 0, 30, 8, 1, key="w_smi")
-    w_detox = st.number_input("Detox Capability", 0, 30, 7, 1, key="w_detox")
-    w_crisis = st.number_input("Crisis Services", 0, 30, 5, 1, key="w_crisis")
+# --- Advanced Weights (collapsed) ---
+with st.sidebar.expander("⚙️ Advanced — Adjust Scoring Weights", expanded=False):
+    st.caption("Weights are loaded from defaults. Changes require app refresh to recalculate scores (cache).")
+    st.markdown("See ℹ️ Scoring Model below the table for weight details.")
 
-# --- 7. FILTERING ENGINE ---
 
-# Start with all data
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 11. FILTERING ENGINE
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 d_work = d.copy()
 
-# Build list of allowed setting types (OR logic)
-allowed_settings = set()
-if inc_psych_hosp:
-    allowed_settings.add('Psychiatric Hospital')
-if inc_hosp_inpt:
-    allowed_settings.add('Hospital Inpatient')
-if inc_residential:
-    allowed_settings.add('Residential')
-    allowed_settings.add('Residential + Detox')
+# --- Setting filter (OR logic) ---
+allowed = set()
+if inc_psych:  allowed.add('Psychiatric Hospital')
+if inc_ipsy:   allowed.add('Inpatient Psych Unit')
+if inc_hosp:   allowed.add('Hospital Inpatient')
+if inc_rtc:    allowed.add('Residential Treatment Center')
+if inc_res:
+    allowed.add('Residential')
+    allowed.add('Residential + Detox')
 if inc_detox:
-    allowed_settings.add('Detox Only')
-    allowed_settings.add('Residential + Detox')
+    allowed.add('Detox Only')
+    allowed.add('Residential + Detox')
 
-# Filter by setting type
-if allowed_settings:
-    d_work = d_work[d_work['setting_type'].isin(allowed_settings)]
+if allowed:
+    d_work = d_work[d_work['setting_type'].isin(allowed)]
 else:
-    # If no settings selected, show all non-outpatient
     d_work = d_work[d_work['setting_type'] != 'Outpatient']
 
 count_setting = len(d_work)
 
-# Apply score thresholds
+# --- Score thresholds ---
 d_work = d_work[
+    (d_work['score'] >= min_total) &
     (d_work['loc_score'] >= min_loc) &
-    (d_work['sophistication_score'] >= min_clinical) &
-    (d_work['acuity_score'] >= min_acuity) &
-    (d_work['score'] >= min_total_score)
+    (d_work['clinical_score'] >= min_clinical) &
+    (d_work['risk_score'] >= min_risk) &
+    (d_work['quality_score'] >= min_quality)
 ]
-
 count_scored = len(d_work)
 
-# Apply capability filters
-if require_cooccurring:
+# --- Capability filters ---
+if require_cod:
     d_work = d_work[d_work['has_cooccurring']]
-
-# Apply MAT tier filter
 if mat_filter == "Has MAT (1+ meds)":
     d_work = d_work[d_work['mat_count'] >= 1]
 elif mat_filter == "Standard MAT (3+ meds)":
     d_work = d_work[d_work['mat_count'] >= 3]
 elif mat_filter == "Comprehensive MAT (5+ meds)":
     d_work = d_work[d_work['mat_count'] >= 5]
-
 if require_smi:
     d_work = d_work[d_work['has_smi']]
+if require_accred:
+    d_work = d_work[d_work['has_accreditation']]
 
 count_capability = len(d_work)
 
-# Apply ownership filter
+# --- Government exclusion ---
 if exclude_govt:
     d_work = d_work[~d_work['is_govt']]
 
 count_final = len(d_work)
 
-# Sort by propensity score
-d_final = d_work.sort_values(by=['score', 'name1'], ascending=[False, True]).copy()
+# --- Sort ---
+d_final = d_work.sort_values(['score', 'name1'], ascending=[False, True]).copy()
 
-# --- 8. TIE DETECTION ---
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 12. TIE DETECTION
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 current_limit = int(st.session_state.max_show)
 count_ties = 0
 
 if count_final > current_limit:
-    cutoff_score = d_final.iloc[current_limit - 1]['score']
-    count_ties = len(d_final.iloc[current_limit:][d_final.iloc[current_limit:]['score'] == cutoff_score])
+    cutoff = d_final.iloc[current_limit - 1]['score']
+    count_ties = len(d_final.iloc[current_limit:][d_final.iloc[current_limit:]['score'] == cutoff])
     display_df = d_final.head(current_limit).copy()
 else:
     display_df = d_final.copy()
 
-# --- 9. MAIN VIEW ---
 
-st.title("🎯 Rounding Solution Target Facilities")
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 13. MAIN VIEW
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-st.markdown("""
-**Scoring:** Facilities ranked 0-100 based on care setting, clinical capabilities, and risk indicators  
-**Filters:** Exclude outpatient-only facilities and government entities (when enabled)
-""")
+st.title("🎯 Rounding Solution — Target Facilities")
 
-# Metrics
+st.markdown(
+    "Facilities ranked **0–100** across four pillars: "
+    "care setting · clinical complexity · sentinel event risk · institutional quality"
+)
+
+# --- Funnel Metrics ---
 c1, c2, c3, c4, c5, c6 = st.columns(6)
-
-c1.metric("1. Universe", f"{total_raw:,}")
-c2.metric("2. Locations", f"{count_unique:,}", delta=f"-{total_raw - count_unique:,}", delta_color="off")
-c3.metric("3. Setting Fit", f"{count_setting:,}", delta=f"-{count_unique - count_setting:,}", delta_color="off")
-c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"-{count_setting - count_scored:,}", delta_color="off")
-c5.metric("5. Qualified", f"{count_final:,}", delta=f"-{count_scored - count_final:,}", delta_color="off")
-
+c1.metric("1. Raw Records", f"{total_raw:,}")
+c2.metric("2. Locations", f"{count_unique:,}", delta=f"−{total_raw - count_unique:,}", delta_color="off")
+c3.metric("3. Setting Fit", f"{count_setting:,}", delta=f"−{count_unique - count_setting:,}", delta_color="off")
+c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"−{count_setting - count_scored:,}", delta_color="off")
+c5.metric("5. Qualified", f"{count_final:,}", delta=f"−{count_scored - count_final:,}", delta_color="off")
 if count_ties > 0:
     c6.metric("6. Ties", f"{count_ties:,}")
     if c6.button("➕ Include Ties"):
@@ -501,207 +708,150 @@ if count_ties > 0:
 
 st.divider()
 
-# Search and filter
+# --- Search / State filter ---
 c_search, c_state = st.columns([2, 1])
 search = c_search.text_input("🔍 Search Facility Name").lower()
 states = c_state.multiselect("📍 State Filter", options=sorted(d['state_clean'].unique()))
 
 if search:
-    display_df = display_df[display_df['name1'].str.lower().str.contains(search)]
+    display_df = display_df[display_df['name1'].str.lower().str.contains(search, na=False)]
 if states:
     display_df = display_df[display_df['state_clean'].isin(states)]
 
-# Add gap analysis column - show what's MISSING not what's present
-def calculate_gaps(row):
-    """Calculate what capabilities are missing for max score"""
-    gaps = []
-    
-    # Max possible by component: LOC=40, Clinical=30, Acuity=30
-    # Check what's missing
-    
-    # Clinical gaps (max 30)
-    if row['sophistication_score'] < 30:
-        clinical_gap = 30 - row['sophistication_score']
-        if row['mat_count'] == 0:
-            gaps.append('MAT')
-        elif row['mat_count'] < 3:
-            gaps.append('MAT+')
-    
-    # Acuity gaps
-    if not row['has_cooccurring']:
-        gaps.append('COD')
-    if not row['has_smi']:
-        gaps.append('SMI')
-    if not row['has_detox']:
-        gaps.append('DTX')
-    if not row['has_crisis']:
-        gaps.append('Crisis')
-    
-    # LOC gap
-    if row['loc_score'] < 40:
-        if row['loc_score'] < 35:
-            gaps.append('Inpatient')
-    
-    return ' | '.join(gaps) if gaps else '—'
-
+# --- Gap analysis ---
+display_df = display_df.copy()
 display_df['Gaps'] = display_df.apply(calculate_gaps, axis=1)
+display_df['Confidence'] = display_df['data_confidence'].apply(confidence_label)
 
-# Data confidence indicator
-def confidence_indicator(confidence):
-    if confidence >= 90:
-        return f'✓ {confidence}%'
-    elif confidence >= 70:
-        return f'~ {confidence}%'
-    else:
-        return f'⚠ {confidence}%'
+# --- Pillar breakdown for display ---
+display_df['Pillars'] = display_df.apply(
+    lambda r: f"{r['loc_score']}·{r['clinical_score']}·{r['risk_score']}·{r['quality_score']}", axis=1
+)
 
-display_df['Confidence'] = display_df['data_confidence'].apply(confidence_indicator)
-
-# Prepare display
+# --- Rank ---
 display_df = display_df.reset_index(drop=True)
 display_df.insert(0, 'Rank', display_df.index + 1)
 
-# Display dataframe
+# --- Table ---
 st.dataframe(
     display_df[[
-        'Rank', 'name1', 'Location', 'setting_type', 
-        'score', 'Gaps', 'Confidence', 'orig_row'
+        'Rank', 'name1', 'Location', 'setting_type',
+        'score', 'Pillars', 'Gaps', 'Confidence',
     ]].rename(columns={
         'name1': 'Facility Name',
-        'setting_type': 'Setting Type',
+        'setting_type': 'Setting',
         'score': 'Score',
-        'orig_row': 'Source Row(s)'
-    }), 
-    use_container_width=True, 
-    height=550, 
-    hide_index=True, 
+        'Pillars': 'L·C·R·Q',
+    }),
+    use_container_width=True,
+    height=560,
+    hide_index=True,
     column_config={
-        "Rank": st.column_config.NumberColumn("Rank", width=60),
-        "Facility Name": st.column_config.TextColumn("Facility Name", width=250),
-        "Location": st.column_config.TextColumn("Location", width=180),
-        "Setting Type": st.column_config.TextColumn("Setting", width=150),
-        "Score": st.column_config.ProgressColumn("Score", format="%d", min_value=0, max_value=100, width=80),
-        "Gaps": st.column_config.TextColumn("Missing Capabilities", width=180),
-        "Confidence": st.column_config.TextColumn("Data", width=80),
-        "Source Row(s)": st.column_config.TextColumn("Source Row(s)", width=150)
+        "Rank": st.column_config.NumberColumn("Rank", width=55),
+        "Facility Name": st.column_config.TextColumn("Facility Name", width=260),
+        "Location": st.column_config.TextColumn("Location", width=170),
+        "Setting": st.column_config.TextColumn("Setting", width=170),
+        "Score": st.column_config.ProgressColumn("Score", format="%d", min_value=0, max_value=100, width=75),
+        "L·C·R·Q": st.column_config.TextColumn("L·C·R·Q", width=95,
+            help="Level of Care · Clinical Complexity · Sentinel Risk · Institutional Quality"),
+        "Gaps": st.column_config.TextColumn("Missing", width=190),
+        "Confidence": st.column_config.TextColumn("Data", width=70),
     }
 )
 
-# Legend
-st.markdown("""
-**Gap Codes:** MAT = No MAT | MAT+ = Limited MAT (<3 meds) | COD = No Co-Occurring | SMI = No SMI Programs | DTX = No Detox | Crisis = No Crisis Services  
-**Data Confidence:** ✓ High (90%+) | ~ Medium (70-89%) | ⚠ Low (<70%) - based on explicit vs inferred capabilities
-""")
-
-# Explanation of fuzzy logic
-with st.expander("ℹ️ About Scoring & Data Inference"):
-    st.markdown("""
-    **Fuzzy Logic Applied:**
-    - **SMI Programs**: Psychiatric hospitals assumed to treat SMI even without explicit code
-    - **Crisis Services**: Psych hospitals and hospital inpatient with detox assumed to have crisis capability
-    
-    **Data Confidence Score:**
-    - **High (✓)**: Most capabilities explicitly coded in SAMHSA data
-    - **Medium (~)**: Some capabilities inferred from facility type
-    - **Low (⚠)**: Significant inference used - verify during outreach
-    
-    **Gap Analysis:**
-    Shows what's missing to reach maximum score potential. Use gaps to:
-    - Prioritize facilities with fewer verification needs (— = no gaps)
-    - Identify what to ask about during discovery calls
-    - Focus on facilities closest to ideal profile
-    """)
-
-# Download
-st.download_button(
-    "📥 Download Current View (CSV)", 
-    display_df.to_csv(index=False).encode('utf-8'), 
-    "rounding_targets.csv",
-    mime="text/csv"
+# --- Legend ---
+st.markdown(
+    "**Gaps:** MAT · MAT↑ (limited) · AP (antipsychotics) · Adv Tx · COD · SMI · SPS · DTX · Crisis · Accred  \n"
+    "**L·C·R·Q:** Level of Care (0-30) · Clinical (0-30) · Risk (0-25) · Quality (0-15)  \n"
+    "**Data:** ✓ High (90%+) · ~ Medium (75-89%) · ⚠ Low (<75%) confidence based on explicit vs inferred data"
 )
 
-# Summary statistics
-with st.expander("📊 View Summary Statistics"):
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("**Setting Type Distribution**")
-        if len(display_df) > 0:
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 14. EXPANDERS: SCORING MODEL, SUMMARY STATS, DOWNLOAD
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+with st.expander("ℹ️ Scoring Model"):
+    st.markdown("""
+**Four-pillar model (0–100 total)**
+
+| Pillar | Max | Key Signals |
+|--------|-----|-------------|
+| **Level of Care** | 30 | Psych Hospital (30) → Inpatient Psych (28) → Hospital (25) → RTC (22) → Res+Detox (20) → Res (17) → Detox (14) |
+| **Clinical Complexity** | 30 | MAT tier (0/6/10/14) + Antipsychotic breadth (0/3/5/7) + Advanced therapies (DBT, EMDR, ECT, TMS, KIT — 2ea, cap 6) + MMD (3) |
+| **Sentinel Event Risk** | 25 | Co-occurring (6) + SMI (5) + Suicide Prevention (5) + Detox (4) + Crisis (3) + First-Episode Psychosis (2) |
+| **Institutional Quality** | 15 | Joint Commission (5) + CARF (3) + Naloxone/OD Ed (2) + Discharge Planning (2) + Outcome Follow-up (1) + Medical Monitoring (2) |
+
+**Fuzzy Inference** (when SAMHSA data is incomplete):
+- Psych hospitals → assumed SMI, Crisis, Suicide Prevention capabilities
+- Inpatient psych units → assumed SMI, Crisis
+- Hospital + co-occurring → assumed SMI
+- 5+ antipsychotics prescribed → assumed SMI
+- Hospital + detox → assumed Crisis
+- Confidence score penalized proportionally to inference used
+    """)
+
+# --- Download ---
+st.download_button(
+    "📥 Download Current View (CSV)",
+    display_df.to_csv(index=False).encode('utf-8'),
+    "rounding_targets.csv",
+    mime="text/csv",
+)
+
+# --- Summary Statistics ---
+with st.expander("📊 Summary Statistics"):
+    if len(display_df) == 0:
+        st.info("No facilities match current filters.")
+    else:
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.markdown("**Setting Distribution**")
             st.dataframe(
                 display_df['setting_type'].value_counts().reset_index()
-                .rename(columns={'setting_type': 'Setting Type', 'count': 'Count'}),
-                hide_index=True,
-                use_container_width=True
+                .rename(columns={'setting_type': 'Setting', 'count': 'Count'}),
+                hide_index=True, use_container_width=True,
             )
-        else:
-            st.info("No facilities to display")
-    
-    with col2:
-        st.markdown("**Top States**")
-        if len(display_df) > 0:
+
+        with col2:
+            st.markdown("**Top 10 States**")
             st.dataframe(
                 display_df['state_clean'].value_counts().head(10).reset_index()
                 .rename(columns={'state_clean': 'State', 'count': 'Count'}),
-                hide_index=True,
-                use_container_width=True
+                hide_index=True, use_container_width=True,
             )
-        else:
-            st.info("No facilities to display")
-    
-    if len(display_df) > 0:
-        st.markdown("**Score Distribution**")
-        col3, col4, col5 = st.columns(3)
-        col3.metric("Mean Score", f"{display_df['score'].mean():.1f}")
-        col4.metric("Median Score", f"{display_df['score'].median():.1f}")
-        col5.metric("Score Range", f"{display_df['score'].min():.0f} - {display_df['score'].max():.0f}")
-        
-        st.markdown("**Data Quality Metrics**")
-        col6, col7, col8 = st.columns(3)
-        col6.metric("Mean Confidence", f"{display_df['data_confidence'].mean():.0f}%")
-        col7.metric("High Confidence (✓)", f"{(display_df['data_confidence'] >= 90).sum()}")
-        col8.metric("Needs Verification (⚠)", f"{(display_df['data_confidence'] < 70).sum()}")
-        
-        # Gap analysis
+
+        with col3:
+            st.markdown("**Score Breakdown**")
+            st.metric("Mean Score", f"{display_df['score'].mean():.1f}")
+            st.metric("Median Score", f"{display_df['score'].median():.0f}")
+            st.metric("Range", f"{display_df['score'].min():.0f} – {display_df['score'].max():.0f}")
+
+        # Pillar averages
+        st.markdown("**Pillar Averages (displayed facilities)**")
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("Level of Care", f"{display_df['loc_score'].mean():.1f} / 30")
+        p2.metric("Clinical", f"{display_df['clinical_score'].mean():.1f} / 30")
+        p3.metric("Risk", f"{display_df['risk_score'].mean():.1f} / 25")
+        p4.metric("Quality", f"{display_df['quality_score'].mean():.1f} / 15")
+
+        # Gap frequency
         st.markdown("**Most Common Gaps**")
         all_gaps = []
-        for gaps_str in display_df['Gaps']:
-            if gaps_str != '—':
-                all_gaps.extend(gaps_str.split(' | '))
+        for g in display_df['Gaps']:
+            if g != '—':
+                all_gaps.extend(g.split(' · '))
         if all_gaps:
-            gap_counts = pd.Series(all_gaps).value_counts().head(5)
             st.dataframe(
-                gap_counts.reset_index().rename(columns={'index': 'Gap', 0: 'Count'}),
-                hide_index=True,
-                use_container_width=True
+                pd.Series(all_gaps).value_counts().head(8).reset_index()
+                .rename(columns={'index': 'Gap', 0: 'Count'}),
+                hide_index=True, use_container_width=True,
             )
-        else:
-            st.info("No gaps - all facilities are complete!")
 
-with st.expander("🔍 Debug Info - Data Quality Check"):
-    st.markdown("**All Unique Setting Types in Data**")
-    all_settings = d['setting_type'].value_counts().reset_index()
-    st.dataframe(all_settings.rename(columns={'setting_type': 'Setting Type', 'count': 'Count'}), hide_index=True)
-    
-    st.markdown("**Score Distribution (All Data)**")
-    col_d1, col_d2, col_d3 = st.columns(3)
-    col_d1.metric("Mean LOC", f"{d['loc_score'].mean():.1f}")
-    col_d2.metric("Mean Clinical", f"{d['sophistication_score'].mean():.1f}")
-    col_d3.metric("Mean Acuity", f"{d['acuity_score'].mean():.1f}")
-    
-    st.markdown("**Currently Selected Settings**")
-    selected = []
-    if inc_psych_hosp: selected.append("Psychiatric Hospital")
-    if inc_hosp_inpt: selected.append("Hospital Inpatient")
-    if inc_residential: selected.append("Residential/Residential + Detox")
-    if inc_detox: selected.append("Detox Only/Residential + Detox")
-    st.write(selected if selected else "None (showing all non-outpatient)")
-    
-    st.markdown("**Active Filters**")
-    st.write(f"- Min LOC Score: {min_loc}")
-    st.write(f"- Min Clinical Score: {min_clinical}")
-    st.write(f"- Min Acuity Score: {min_acuity}")
-    st.write(f"- Min Total Score: {min_total_score}")
-    st.write(f"- Exclude Government: {exclude_govt}")
-    st.write(f"- Require COD: {require_cooccurring}")
-    st.write(f"- MAT Filter: {mat_filter}")
-    st.write(f"- Require SMI: {require_smi}")
+        # Data quality
+        st.markdown("**Data Quality**")
+        q1, q2, q3 = st.columns(3)
+        q1.metric("High Confidence (✓)", f"{(display_df['data_confidence'] >= 90).sum()}")
+        q2.metric("Medium (~)", f"{((display_df['data_confidence'] >= 75) & (display_df['data_confidence'] < 90)).sum()}")
+        q3.metric("Needs Verification (⚠)", f"{(display_df['data_confidence'] < 75).sum()}")
