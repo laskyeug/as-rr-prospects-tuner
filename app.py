@@ -39,7 +39,7 @@ div[data-testid="stHorizontalBlock"] {align-items: flex-start !important;}
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 if 'max_show' not in st.session_state:
-    st.session_state.max_show = 250
+    st.session_state.max_show = 500
 if 'pending_tie_add' not in st.session_state:
     st.session_state.pending_tie_add = 0
 
