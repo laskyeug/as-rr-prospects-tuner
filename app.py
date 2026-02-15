@@ -8,13 +8,58 @@ st.set_page_config(page_title="A/S RR Tuner", layout="wide")
 
 st.markdown("""
     <style>
+    /* MAIN LAYOUT */
     .block-container {padding-top: 1.5rem; padding-bottom: 0rem;}
     [data-testid="stSidebar"] {width: 310px !important;}
+    
+    /* SIDEBAR LIFT & GLOBAL SPACING */
+    [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+        gap: 0.6rem !important;
+        padding-top: 0rem !important;
+    }
     [data-testid="stSidebarNav"] {display: none;}
-    [data-testid="stSidebar"] h1 {margin-top: -30px !important; margin-bottom: 0.5rem !important; font-size: 1.7rem !important;}
-    [data-testid="stSidebar"] h3 {margin-top: 0.4rem !important; margin-bottom: 0.1rem !important; font-size: 1.05rem !important; font-weight: 600;}
+    [data-testid="stSidebar"] h1 {
+        margin-top: -30px !important; 
+        margin-bottom: 0.5rem !important;
+        font-size: 1.7rem !important;
+    }
+    [data-testid="stSidebar"] h3 {
+        margin-top: 0.4rem !important;
+        margin-bottom: 0.1rem !important;
+        font-size: 1.05rem !important;
+        font-weight: 600;
+    }
     [data-testid="stSidebar"] hr {margin: 0.3rem 0px !important;}
-    .slider-label-row {display: flex; justify-content: space-between; font-size: 11px; color: #808495; margin-top: -22px; margin-bottom: 12px; padding: 0 5px;}
+
+    /* TIGHT SLIDER LABELS BUT SPACED BLOCKS */
+    .slider-label-row {
+        display: flex;
+        justify-content: space-between;
+        font-size: 11px;
+        color: #808495;
+        margin-top: -22px; 
+        margin-bottom: 12px; 
+        padding: 0 5px;
+    }
+
+    /* CLEAN BUTTON STYLING (Column 6) */
+    div[data-testid="column"] button {
+        width: 90%;
+        margin-left: 5%;
+        margin-top: -12px; 
+        border: none;
+        border-radius: 6px;
+        background-color: #262730; 
+        color: #ff4b4b; 
+        font-weight: 600;
+        font-size: 13px;
+        transition: all 0.2s;
+        padding: 4px 0px;
+    }
+    div[data-testid="column"] button:hover {
+        background-color: #ff4b4b;
+        color: white;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -22,13 +67,16 @@ st.markdown("""
 if 'max_show' not in st.session_state:
     st.session_state.max_show = 100
 
-# --- 3. DATA LOADING ---
-INFRA_CODES = {'HI', 'PSYH', 'RES', 'RL', 'RS', 'DT', 'ADTX', 'ODTX', 'BDTX', 'CDTX', 'MDTX', 'SUMH', 'MH', 'SA', 'OTP'}
-CLINICAL_CODES = {'METH', 'NXN', 'VTRL', 'LABT', 'MM', 'MSRV', 'UB', 'BERI', 'GH', 'CO', 'VET', 'ADM', 'PW', 'SE'}
-STANDARD_CODES = {'OP', 'IOP', 'PH', 'CBT', 'DBT', 'MI', 'ANG', 'REL', 'TRC', 'SAE', 'TCC', 'CM', 'SS', 'TA'}
+# --- 3. DATA LOADING & PROPENSITY DEFINITIONS ---
+# Category A: Asset Intensity (Beds and Facilities)
+ASSET_CODES = {'HI', 'PSYH', 'RES', 'RL', 'RS', 'DT', 'ADTX', 'ODTX', 'BDTX', 'CDTX', 'MDTX'}
+# Category B: Medical Intensity (Acute Services)
+MEDICAL_CODES = {'METH', 'NXN', 'VTRL', 'LABT', 'MM', 'MSRV', 'UB', 'BERI', 'GH'}
+# Category C: Operational Density (Continuum Services)
+OPS_CODES = {'PH', 'IOP', 'CBT', 'DBT', 'MI', 'ANG', 'REL', 'TRC', 'SAE', 'TCC', 'CM', 'SS', 'TA'}
 
-MAT_CODES = {'METH', 'NXN', 'VTRL'}
-STEP_DOWN_CODES = {'PH', 'IOP'}
+GOVT_CODES = {'FED', 'STG', 'VAMC', 'LCLG', 'GVT', 'STLG'}
+NP_CODES = {'PVTN'}
 
 def count_category(tag_string, category_set):
     tags = set([t.strip() for t in str(tag_string).split('*') if t.strip()])
@@ -58,14 +106,14 @@ def load_data():
         }).reset_index()
         
         rollup['Location'] = rollup.apply(lambda x: f"{x['city_clean']}, {x['state_clean']}" if x['city_clean'] else x['state_clean'], axis=1)
-        rollup['n_infra'] = rollup['service_code_info'].apply(lambda x: count_category(x, INFRA_CODES))
-        rollup['n_clinical'] = rollup['service_code_info'].apply(lambda x: count_category(x, CLINICAL_CODES))
-        rollup['n_standard'] = rollup['service_code_info'].apply(lambda x: count_category(x, STANDARD_CODES))
-        rollup['has_detox'] = rollup['service_code_info'].str.contains('DT|ADTX|ODTX', case=False, na=False)
-        rollup['n_mat'] = rollup['service_code_info'].apply(lambda x: count_category(x, MAT_CODES))
-        rollup['has_stepdown'] = rollup['service_code_info'].apply(lambda x: count_category(x, STEP_DOWN_CODES) > 0)
-        rollup['is_govt'] = rollup['service_code_info'].str.contains('FED|STG|VAMC|LCLG|GVT', case=False, na=False)
-        rollup['is_np'] = rollup['service_code_info'].str.contains('PVTN', case=False, na=False)
+        
+        # Pre-Calculate Propensity Raw Counts
+        rollup['n_assets'] = rollup['service_code_info'].apply(lambda x: count_category(x, ASSET_CODES))
+        rollup['n_medical'] = rollup['service_code_info'].apply(lambda x: count_category(x, MEDICAL_CODES))
+        rollup['n_ops'] = rollup['service_code_info'].apply(lambda x: count_category(x, OPS_CODES))
+        
+        rollup['is_govt'] = rollup['service_code_info'].str.contains('|'.join(GOVT_CODES), case=False, na=False)
+        rollup['is_np'] = rollup['service_code_info'].str.contains('|'.join(NP_CODES), case=False, na=False)
         
         return rollup, len(df)
     except Exception as e:
@@ -73,101 +121,103 @@ def load_data():
 
 d, total_raw = load_data()
 
-# --- 4. SCORING CONTROL BOARD ---
-st.sidebar.title("🎛️ Scoring Controls")
+# --- 4. SCORING CONTROL BOARD (Sidebar) ---
+st.sidebar.title("🎛️ Propensity Engine")
 
-with st.sidebar.expander("Care Types (Include)", expanded=True):
-    inc_res = st.checkbox("Residential", value=True)
-    inc_dtx = st.checkbox("Detox (DT)", value=True)
+with st.sidebar.expander("Care Funnel Filters", expanded=True):
+    inc_res = st.checkbox("Residential / Beds", value=True)
+    inc_dtx = st.checkbox("Detox Capability", value=True)
     inc_hosp = st.checkbox("Hospital / Inpatient", value=True)
 
-st.sidebar.subheader("Importance Weights (%)")
-# Weights are now purely for SCORING (Math)
-w_infra = st.sidebar.slider("Infrastructure Breadth", 0, 100, 50)
-st.sidebar.markdown('<div class="slider-label-row"><span>Lower Weight</span><span>Higher Weight</span></div>', unsafe_allow_html=True)
+st.sidebar.subheader("Hurdle Intensity (%)")
+# Sliders act as the MINIMUM percentage of categorical tags required to clear the hurdle
+h_assets = st.sidebar.slider("Asset Intensity", 0, 100, 30)
+st.sidebar.markdown('<div class="slider-label-row"><span>Lower Req.</span><span>Industrial</span></div>', unsafe_allow_html=True)
 
-w_clin = st.sidebar.slider("Clinical Depth", 0, 100, 30)
-st.sidebar.markdown('<div class="slider-label-row"><span>Lower Weight</span><span>Higher Weight</span></div>', unsafe_allow_html=True)
+h_medical = st.sidebar.slider("Medical Intensity", 0, 100, 25)
+st.sidebar.markdown('<div class="slider-label-row"><span>Lower Req.</span><span>Acute Medical</span></div>', unsafe_allow_html=True)
 
-w_std = st.sidebar.slider("Services Offered", 0, 100, 20)
-st.sidebar.markdown('<div class="slider-label-row"><span>Lower Weight</span><span>Higher Weight</span></div>', unsafe_allow_html=True)
-
-st.sidebar.divider()
-exclude_non_priv = st.sidebar.toggle("Exclude Explicit Non-Private", value=True)
+h_ops = st.sidebar.slider("Operational Density", 0, 100, 15)
+st.sidebar.markdown('<div class="slider-label-row"><span>Lower Req.</span><span>Full Continuum</span></div>', unsafe_allow_html=True)
 
 st.sidebar.divider()
-min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
-st.sidebar.number_input("Download Size (Rows)", key="max_show", min_value=1, step=1)
+exclude_explicit = st.sidebar.toggle("Exclude Explicit Govt / NP", value=True)
 
-# --- 5. SCORING ENGINE ---
-# Normalize breadth scores (0-100)
-i_max = d['n_infra'].max() if d['n_infra'].max() > 0 else 1
-c_max = d['n_clinical'].max() if d['n_clinical'].max() > 0 else 1
-s_max = d['n_standard'].max() if d['n_standard'].max() > 0 else 1
+st.sidebar.divider()
+min_floor = st.sidebar.slider("Minimum Propensity Floor", 0, 100, 45)
+st.sidebar.number_input("Display Row Count", key="max_show", min_value=1, step=1)
 
-d['score_infra'] = (d['n_infra'] / i_max) * 100
-d['score_clin'] = (d['n_clinical'] / c_max) * 100
-d['score_std'] = (d['n_standard'] / s_max) * 100
+# --- 5. SCORING & FILTERING ENGINE (The Logic Layer) ---
+# Normalizing signals against the highest count in the dataset
+a_max = d['n_assets'].max() if d['n_assets'].max() > 0 else 1
+m_max = d['n_medical'].max() if d['n_medical'].max() > 0 else 1
+o_max = d['n_ops'].max() if d['n_ops'].max() > 0 else 1
 
-# Fuzzy Bonuses
-d['fuzzy_score'] = 0
-d.loc[(d['n_infra'] > 2) & (d['has_detox']) & (d['n_mat'] > 0), 'fuzzy_score'] += 20
-d.loc[(d['n_infra'] > 1) & (d['has_stepdown']), 'fuzzy_score'] += 10
+d['pct_assets'] = (d['n_assets'] / a_max) * 100
+d['pct_medical'] = (d['n_medical'] / m_max) * 100
+d['pct_ops'] = (d['n_ops'] / o_max) * 100
 
-# Final Propensity Score calculation
-# These sliders no longer filter—they only impact the average
-d['Raw_Score'] = (d['score_infra'] * (w_infra/100)) + (d['score_clin'] * (w_clin/100)) + (d['score_std'] * (w_std/100)) + d['fuzzy_score']
-final_max = d['Raw_Score'].max() if d['Raw_Score'].max() > 0 else 1
-d['Propensity Score'] = ((d['Raw_Score'] / final_max) * 100).round(0).astype(int)
+# The Propensity Score is the mean of the three signatures
+d['Propensity Score'] = ((d['pct_assets'] + d['pct_medical'] + d['pct_ops']) / 3).round(0).astype(int)
 
-# --- 6. FILTERING ENGINE ---
+# THE WATERFALL FILTERING
+# Step 1: Unique Locations (Handled by Rollup)
 count_unique = len(d)
+
+# Step 2: Care Types Fit
 patterns = []
 if inc_res: patterns.append("RES|RL|RS")
-if inc_dtx: patterns.append("DT")
+if inc_dtx: patterns.append("DT|ADTX")
 if inc_hosp: patterns.append("HI|PSY")
-
-# 1. Care Type Fit (Deterministic)
 d_work = d[d['service_code_info'].str.contains("|".join(patterns), case=False, na=False)] if patterns else d
-count_services = len(d_work)
+count_fit = len(d_work)
 
-# 2. Score Fit (Heuristic) - This is where the Min. Score Threshold bouncer lives
-d_scored = d_work[d_work['Propensity Score'] >= min_propensity]
+# Step 3: Score Fit (Propensity Hurdles + Floor)
+d_scored = d_work[
+    (d_work['pct_assets'] >= h_assets) &
+    (d_work['pct_medical'] >= h_medical) &
+    (d_work['pct_ops'] >= h_ops) &
+    (d_work['Propensity Score'] >= min_floor)
+]
 count_scored = len(d_scored)
 
-# 3. Total Qualified (Ownership Cut)
+# Step 4: Total Qualified (Ownership Cut)
 d_final = d_scored.copy()
-if exclude_non_priv:
+if exclude_explicit:
     d_final = d_final[~(d_final['is_govt'] | d_final['is_np'])]
-
 count_final = len(d_final)
-d_final = d_final.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
 
-# --- 7. TIE DETECTION ---
+# Sort for Display
+d_final = d_final.sort_values(by=['Propensity Score', 'name1'], ascending=[False, True])
+
+# --- 6. TIE DETECTION ---
 current_limit = int(st.session_state.max_show)
 count_ties = 0
 if count_final > current_limit:
-    cutoff = d_final.iloc[current_limit - 1]['Propensity Score']
-    count_ties = len(d_final.iloc[current_limit:][d_final.iloc[current_limit:]['Propensity Score'] == cutoff])
+    cutoff_score = d_final.iloc[current_limit - 1]['Propensity Score']
+    count_ties = len(d_final.iloc[current_limit:][d_final.iloc[current_limit:]['Propensity Score'] == cutoff_score])
     display_df = d_final.head(current_limit).copy()
 else:
     display_df = d_final.copy()
 
-# --- 8. MAIN VIEW ---
-st.title("📊 Scored Prospects")
-c1, c2, c3, c4, c5, c6 = st.columns(6)
-c1.metric("1. Universe", f"{total_raw:,}")
-c2.metric("2. Unique Locs", f"{count_unique:,}", delta=f"-{total_raw - count_unique:,}", delta_color="off")
-c3.metric("3. Care Type Fit", f"{count_services:,}", delta=f"-{count_unique - count_services:,}", delta_color="off")
-c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"-{count_services - count_scored:,}", delta_color="off")
-c5.metric("5. Total Qualified", f"{count_final:,}", delta=f"-{count_scored - count_final:,}", delta_color="off")
+# --- 7. MAIN VIEW ---
+st.title("📊 Commercial Propensity Targets")
+
+# WATERFALL METRICS
+m1, m2, m3, m4, m5, m6 = st.columns(6)
+m1.metric("1. Universe", f"{total_raw:,}")
+m2.metric("2. Unique Locs", f"{count_unique:,}", delta=f"-{total_raw - count_unique:,}", delta_color="off")
+m3.metric("3. Care Fit", f"{count_fit:,}", delta=f"-{count_unique - count_fit:,}", delta_color="off")
+m4.metric("4. Score Fit", f"{count_scored:,}", delta=f"-{count_fit - count_scored:,}", delta_color="off")
+m5.metric("5. Qualified", f"{count_final:,}", delta=f"-{count_scored - count_final:,}", delta_color="off")
 
 if count_ties > 0:
-    c6.metric("6. Hidden Ties", f"{count_ties:,}")
-    if c6.button("➕ Include Ties"):
+    m6.metric("6. Ties Hidden", f"{count_ties:,}")
+    if m6.button("➕ Include Ties"):
         st.session_state.max_show += count_ties
         st.rerun()
 
+# SEARCH AND FILTERS
 c_search, c_state = st.columns([2, 1])
 search = c_search.text_input("🔍 Search Name").lower()
 states = c_state.multiselect("📍 State", options=sorted(d['state_clean'].unique()))
@@ -175,12 +225,18 @@ states = c_state.multiselect("📍 State", options=sorted(d['state_clean'].uniqu
 if search: display_df = display_df[display_df['name1'].str.lower().str.contains(search)]
 if states: display_df = display_df[display_df['state_clean'].isin(states)]
 
+# Rank Inject
 display_df = display_df.reset_index(drop=True)
 display_df.insert(0, 'Rank', display_df.index + 1)
 
+# DATA TABLE
 st.dataframe(
-    display_df[['Rank', 'name1', 'Location', 'Propensity Score', 'orig_row']].rename(
-        columns={'name1': 'Facility Name', 'orig_row': 'Source Row(s)'}
+    display_df[['Rank', 'name1', 'Location', 'phone', 'Propensity Score', 'orig_row']].rename(
+        columns={
+            'name1': 'Facility Name', 
+            'phone': 'Phone', 
+            'orig_row': 'Source Row(s)'
+        }
     ), 
     use_container_width=True, 
     height=550, 
@@ -192,4 +248,4 @@ st.dataframe(
     }
 )
 
-st.download_button("📥 Download (CSV)", d_final.to_csv(index=False).encode('utf-8'), "Scored_Prospects.csv")
+st.download_button("📥 Download (CSV)", d_final.to_csv(index=False).encode('utf-8'), "Propensity_Targets.csv")
