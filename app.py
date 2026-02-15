@@ -13,6 +13,8 @@ st.markdown("""
     div[data-testid="stMetric"] {padding: 0px 0px 5px 0px;}
     .stCheckbox {margin-bottom: -15px;}
     .stSlider {padding-top: 10px; padding-bottom: 20px;}
+    /* Make the button fill the column width for better aesthetics */
+    div.stButton > button {width: 100%;}
     </style>
     """, unsafe_allow_html=True)
 
@@ -188,19 +190,15 @@ c3.metric("3. Care Type Fit", f"{count_services:,}", delta=f"-{count_unique - co
 c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"-{count_services - count_scored:,}", delta_color="off")
 c5.metric("5. Total Qualified", f"{count_final:,}", delta=f"-{count_scored - count_final:,}", delta_color="off")
 
-# 6th Metric: Dynamic based on hidden ties
+# 6th Metric: DYNAMIC
 backlog = max(0, count_final - len(display_df))
 if has_hidden_ties:
-    c6.metric("6. Hidden Backlog", f"{backlog:,}", delta=f"⚠️ {count_ties} Ties", delta_color="inverse")
-else:
-    c6.metric("6. Hidden Backlog", f"{backlog:,}", delta="Below Cutoff", delta_color="off")
-
-# --- THE CLEAN BUTTON ---
-if has_hidden_ties:
-    # Place button right below the metrics
-    if st.button(f"➕ Add {count_ties} hidden records with Score {cutoff_score} to current view"):
+    c6.metric("6. Hidden Ties", f"{count_ties:,}", delta="Below Cutoff", delta_color="inverse")
+    if c6.button(f"➕ Add {count_ties}"):
         st.session_state.max_show += count_ties
         st.rerun()
+else:
+    c6.metric("6. Hidden Backlog", f"{backlog:,}", delta="Below Cutoff", delta_color="off")
 
 # Search
 c_search, c_state = st.columns(2)
