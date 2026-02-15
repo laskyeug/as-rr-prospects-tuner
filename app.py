@@ -3,7 +3,7 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 
-# --- 1. CONFIG & STYLING (Balanced Spacing) ---
+# --- 1. CONFIG & STYLING (Final Vertical Optimization) ---
 st.set_page_config(page_title="A/S RR Tuner", layout="wide")
 
 st.markdown("""
@@ -12,38 +12,36 @@ st.markdown("""
     .block-container {padding-top: 1.5rem; padding-bottom: 0rem;}
     [data-testid="stSidebar"] {width: 310px !important;}
     
-    /* SIDEBAR SPACING (Balanced 10-15% expansion from scrunched version) */
+    /* SIDEBAR LIFT: Shift the entire block up */
     [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
-        gap: 0.6rem !important; 
+        gap: 0.5rem !important;
+        padding-top: 0rem !important; /* Removes top padding to shift block up */
+    }
+    [data-testid="stSidebarNav"] {
+        display: none; /* Removes unnecessary nav space if present */
     }
     [data-testid="stSidebar"] h1 {
-        margin-top: 0rem !important;
-        margin-bottom: 0.8rem !important;
+        margin-top: -30px !important; /* Aggressive lift for the title */
+        margin-bottom: 0.5rem !important;
         font-size: 1.7rem !important;
     }
     [data-testid="stSidebar"] h3 {
-        margin-top: 0.4rem !important;
-        margin-bottom: 0.2rem !important;
+        margin-top: 0.2rem !important;
+        margin-bottom: 0.1rem !important;
         font-size: 1.05rem !important;
-        font-weight: 600;
     }
+    /* Tighten Dividers to save vertical real estate */
     [data-testid="stSidebar"] hr {
-        margin: 0.8rem 0px !important;
+        margin: 0.4rem 0px !important;
     }
     [data-testid="stSidebar"] .stCheckbox {
-        margin-bottom: -5px !important;
+        margin-bottom: -8px !important;
     }
     [data-testid="stSidebar"] .stSlider {
-        padding-bottom: 12px !important;
-    }
-    [data-testid="stSidebar"] .stNumberInput {
-        margin-top: 5px !important;
+        padding-bottom: 8px !important;
     }
 
-    /* METRIC BUTTON STYLING (Centered & Integrated) */
-    div[data-testid="stMetric"] {
-        padding-bottom: 5px !important;
-    }
+    /* METRIC BUTTON STYLING */
     div[data-testid="column"] button {
         width: 90%;
         margin-left: 5%;
@@ -92,7 +90,6 @@ def load_data():
         sheet = client.open("SAMHSA_Master_Data").sheet1
         df = pd.DataFrame(sheet.get_all_records())
         df['orig_row'] = df.index + 2
-        
         df['city_clean'] = df['city'].fillna('').astype(str).str.title()
         df['state_clean'] = df['state'].fillna('').astype(str).str.upper()
         
@@ -103,7 +100,6 @@ def load_data():
         }).reset_index()
         
         rollup['Location'] = rollup.apply(lambda x: f"{x['city_clean']}, {x['state_clean']}" if x['city_clean'] else x['state_clean'], axis=1)
-        
         rollup['n_infra'] = rollup['service_code_info'].apply(lambda x: count_category(x, INFRA_CODES))
         rollup['n_clinical'] = rollup['service_code_info'].apply(lambda x: count_category(x, CLINICAL_CODES))
         rollup['n_private'] = rollup['service_code_info'].apply(lambda x: count_category(x, PRIVATE_CODES))
@@ -168,7 +164,7 @@ else:
 # --- 8. MAIN VIEW ---
 st.title("📊 Scored Prospects")
 
-# Metrics Waterfall (Wider spacing)
+# Metrics Waterfall
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("1. Universe", f"{total_raw:,}")
 c2.metric("2. Unique Locs", f"{count_unique:,}")
