@@ -854,13 +854,19 @@ if count_filtered > current_limit:
 else:
     display_df = d_final.copy()
 
-# Ties — always show when present (regardless of search/state)
+# Ties — button centered under the ties counter
 if count_ties > 0:
     if not (search or states):
-        c6.metric("6. Ties", f"{count_ties:,}")
-    if st.button(f"➕ Include {count_ties} Ties at Score {int(cutoff)}"):
-        st.session_state.pending_tie_add = count_ties
-        st.rerun()
+        with c6:
+            st.metric("6. Ties", f"{count_ties:,}")
+            if st.button("➕ Include Ties"):
+                st.session_state.pending_tie_add = count_ties
+                st.rerun()
+    else:
+        # c6 already used for Filtered — put tie button below search bar
+        if st.button(f"➕ Include {count_ties} Ties at Score {int(cutoff)}"):
+            st.session_state.pending_tie_add = count_ties
+            st.rerun()
 
 # --- Gap analysis ---
 display_df = display_df.copy()
