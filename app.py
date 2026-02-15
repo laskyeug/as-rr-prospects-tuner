@@ -264,10 +264,10 @@ with st.sidebar.expander("🎚️ Minimum Scores", expanded=False):
 
 st.sidebar.divider()
 
-with st.sidebar.expander("⚙️ Requirements", expanded=False):
-    require_cooccurring = st.checkbox("Co-occurring Treatment", value=False)
-    require_mat = st.checkbox("MAT Capability", value=False)
-    require_smi = st.checkbox("SMI Programs", value=False)
+with st.sidebar.expander("💊 Other Treatments", expanded=False):
+    require_cooccurring = st.checkbox("Co-Occurring Disorders (COD)", value=False)
+    require_mat = st.checkbox("Medication-Assisted Therapy (MAT)", value=False)
+    require_smi = st.checkbox("Severe Mental Illness (SMI)", value=False)
 
 st.sidebar.divider()
 
@@ -517,6 +517,6 @@ with st.expander("🔍 Debug Info - Data Quality Check"):
     st.write(f"- Min Acuity Score: {min_acuity}")
     st.write(f"- Min Total Score: {min_total_score}")
     st.write(f"- Exclude Government: {exclude_govt}")
-    st.write(f"- Require Co-occurring: {require_cooccurring}")
+    st.write(f"- Require COD: {require_cooccurring}")
     st.write(f"- Require MAT: {require_mat}")
     st.write(f"- Require SMI: {require_smi}")
