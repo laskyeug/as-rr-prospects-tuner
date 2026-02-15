@@ -113,28 +113,45 @@ def calculate_sophistication_score(row, weights=None):
     
     return min(30, score)  # Cap at 30
 
-def calculate_acuity_score(row, weights=None):
-    """Calculate Risk/Acuity score (0-30 points)"""
+def calculate_acuity_score(row, weights=None, use_inference=True):
+    """Calculate Risk/Acuity score (0-30 points) with optional fuzzy inference"""
     if weights is None:
         weights = {'cooccur': 10, 'smi': 8, 'detox': 7, 'crisis': 5}
     
     codes = str(row['service_code_info']).upper()
     
     score = 0
+    inferred_points = 0
     
     if has_code(codes, ACUITY_INDICATORS['COOCCURRING']):
         score += weights['cooccur']
     
-    if has_code(codes, ACUITY_INDICATORS['SMI_PROGRAMS']):
-        score += weights['smi']
+    # SMI - use inference if enabled
+    if use_inference:
+        has_smi, smi_source = infer_smi_capability(row)
+        if has_smi:
+            score += weights['smi']
+            if smi_source != 'explicit':
+                inferred_points += weights['smi']
+    else:
+        if has_code(codes, ACUITY_INDICATORS['SMI_PROGRAMS']):
+            score += weights['smi']
     
     if has_code(codes, ACUITY_INDICATORS['DETOX']):
         score += weights['detox']
     
-    if has_code(codes, ACUITY_INDICATORS['CRISIS_SERVICES']):
-        score += weights['crisis']
+    # Crisis - use inference if enabled
+    if use_inference:
+        has_crisis, crisis_source = infer_crisis_capability(row)
+        if has_crisis:
+            score += weights['crisis']
+            if crisis_source != 'explicit':
+                inferred_points += weights['crisis']
+    else:
+        if has_code(codes, ACUITY_INDICATORS['CRISIS_SERVICES']):
+            score += weights['crisis']
     
-    return min(30, score)  # Cap at 30
+    return min(30, score), inferred_points  # Return score and inferred points
 
 def get_setting_type(row):
     """Determine primary setting type for display"""
@@ -158,6 +175,50 @@ def get_setting_type(row):
         return 'Detox Only'
     
     return 'Outpatient'
+
+def infer_smi_capability(row):
+    """Use fuzzy logic to infer SMI capability even if not explicitly coded"""
+    codes = str(row['service_code_info']).upper()
+    
+    # Explicit SMI code
+    if 'SMI' in codes:
+        return True, 'explicit'
+    
+    # Psychiatric hospitals by definition treat SMI
+    if 'PSYH' in codes:
+        return True, 'inferred_psych'
+    
+    # Hospital inpatient with co-occurring likely treats SMI
+    if re.search(r'\bHI\b', codes) and 'SUMH' in codes:
+        return True, 'inferred_hospital'
+    
+    # MH facility type with residential care
+    if row.get('Facility_Type') == 'MH' and has_code(codes, LOC_INDICATORS['RESIDENTIAL']):
+        return True, 'inferred_residential'
+    
+    return False, 'none'
+
+def infer_crisis_capability(row):
+    """Use fuzzy logic to infer crisis services"""
+    codes = str(row['service_code_info']).upper()
+    
+    # Explicit crisis codes
+    if has_code(codes, ACUITY_INDICATORS['CRISIS_SERVICES']):
+        return True, 'explicit'
+    
+    # Psychiatric hospitals have crisis capability
+    if 'PSYH' in codes:
+        return True, 'inferred_psych'
+    
+    # Hospital inpatient with detox = crisis capability
+    if re.search(r'\bHI\b', codes) and has_code(codes, LOC_INDICATORS['DETOX']):
+        return True, 'inferred_hospital'
+    
+    # 24hr residential with co-occurring + detox
+    if has_code(codes, LOC_INDICATORS['RESIDENTIAL']) and 'SUMH' in codes and has_code(codes, LOC_INDICATORS['DETOX']):
+        return True, 'inferred_residential'
+    
+    return False, 'none'
 
 def merge_tags(series):
     """Merge service code tags from multiple rows"""
@@ -190,7 +251,12 @@ def load_data():
         # Calculate scores for each row
         df['loc_score'] = df.apply(calculate_loc_score, axis=1)
         df['sophistication_score'] = df.apply(calculate_sophistication_score, axis=1)
-        df['acuity_score'] = df.apply(calculate_acuity_score, axis=1)
+        
+        # Acuity score with inference - returns (score, inferred_points)
+        acuity_results = df.apply(calculate_acuity_score, axis=1, result_type='expand')
+        df['acuity_score'] = acuity_results[0]
+        df['inferred_points'] = acuity_results[1]
+        
         df['setting_type'] = df.apply(get_setting_type, axis=1)
         
         # Check if government facility
@@ -203,13 +269,24 @@ def load_data():
             df['acuity_score']
         ).round(0).astype(int)
         
-        # Get key indicators for display
+        # Data confidence score (0-100%)
+        # Higher confidence = more explicit codes, less inference needed
+        df['data_confidence'] = ((30 - df['inferred_points']) / 30 * 100).round(0).astype(int)
+        
+        # Get key indicators for display and filtering
         df['has_cooccurring'] = df['service_code_info'].apply(
             lambda x: has_code(x, ACUITY_INDICATORS['COOCCURRING'])
         )
-        df['has_smi'] = df['service_code_info'].apply(
-            lambda x: has_code(x, ACUITY_INDICATORS['SMI_PROGRAMS'])
-        )
+        
+        # Use inference for has_smi and has_crisis
+        smi_results = df.apply(infer_smi_capability, axis=1, result_type='expand')
+        df['has_smi'] = smi_results[0]
+        df['smi_source'] = smi_results[1]
+        
+        crisis_results = df.apply(infer_crisis_capability, axis=1, result_type='expand')
+        df['has_crisis'] = crisis_results[0]
+        df['crisis_source'] = crisis_results[1]
+        
         df['has_detox'] = df['service_code_info'].apply(
             lambda x: has_code(x, ACUITY_INDICATORS['DETOX'])
         )
@@ -230,11 +307,16 @@ def load_data():
             'loc_score': 'max',
             'sophistication_score': 'max',
             'acuity_score': 'max',
+            'inferred_points': 'max',
+            'data_confidence': 'min',  # Use most conservative confidence
             'setting_type': 'first',
             'Facility_Type': lambda x: ' & '.join(sorted(set(x))) if 'Facility_Type' in df.columns else 'Unknown',
             'is_govt': 'max',
             'has_cooccurring': 'max',
             'has_smi': 'max',
+            'smi_source': 'first',
+            'has_crisis': 'max',
+            'crisis_source': 'first',
             'has_detox': 'max',
             'mat_count': 'max',
             'has_mat': 'max'
@@ -429,23 +511,51 @@ if search:
 if states:
     display_df = display_df[display_df['state_clean'].isin(states)]
 
-# Add indicators column
-def get_mat_indicator(count):
-    if count == 0:
-        return ''
-    elif count <= 2:
-        return '💉¹'  # Basic
-    elif count <= 4:
-        return '💉²'  # Standard
-    else:
-        return '💉³'  # Comprehensive
+# Add gap analysis column - show what's MISSING not what's present
+def calculate_gaps(row):
+    """Calculate what capabilities are missing for max score"""
+    gaps = []
+    
+    # Max possible by component: LOC=40, Clinical=30, Acuity=30
+    # Check what's missing
+    
+    # Clinical gaps (max 30)
+    if row['sophistication_score'] < 30:
+        clinical_gap = 30 - row['sophistication_score']
+        if row['mat_count'] == 0:
+            gaps.append('MAT')
+        elif row['mat_count'] < 3:
+            gaps.append('MAT+')
+    
+    # Acuity gaps
+    if not row['has_cooccurring']:
+        gaps.append('COD')
+    if not row['has_smi']:
+        gaps.append('SMI')
+    if not row['has_detox']:
+        gaps.append('DTX')
+    if not row['has_crisis']:
+        gaps.append('Crisis')
+    
+    # LOC gap
+    if row['loc_score'] < 40:
+        if row['loc_score'] < 35:
+            gaps.append('Inpatient')
+    
+    return ' | '.join(gaps) if gaps else '—'
 
-display_df['Indicators'] = (
-    display_df['has_cooccurring'].map({True: '🔀', False: ''}) + 
-    display_df['has_detox'].map({True: '💊', False: ''}) +
-    display_df['has_smi'].map({True: '🧠', False: ''}) +
-    display_df['mat_count'].apply(get_mat_indicator)
-).str.strip()
+display_df['Gaps'] = display_df.apply(calculate_gaps, axis=1)
+
+# Data confidence indicator
+def confidence_indicator(confidence):
+    if confidence >= 90:
+        return f'✓ {confidence}%'
+    elif confidence >= 70:
+        return f'~ {confidence}%'
+    else:
+        return f'⚠ {confidence}%'
+
+display_df['Confidence'] = display_df['data_confidence'].apply(confidence_indicator)
 
 # Prepare display
 display_df = display_df.reset_index(drop=True)
@@ -455,15 +565,11 @@ display_df.insert(0, 'Rank', display_df.index + 1)
 st.dataframe(
     display_df[[
         'Rank', 'name1', 'Location', 'setting_type', 
-        'score', 'loc_score', 'sophistication_score', 'acuity_score',
-        'Indicators', 'orig_row'
+        'score', 'Gaps', 'Confidence', 'orig_row'
     ]].rename(columns={
         'name1': 'Facility Name',
         'setting_type': 'Setting Type',
-        'score': 'Total Score',
-        'loc_score': 'LOC',
-        'sophistication_score': 'Clinical',
-        'acuity_score': 'Acuity',
+        'score': 'Score',
         'orig_row': 'Source Row(s)'
     }), 
     use_container_width=True, 
@@ -474,19 +580,37 @@ st.dataframe(
         "Facility Name": st.column_config.TextColumn("Facility Name", width=250),
         "Location": st.column_config.TextColumn("Location", width=180),
         "Setting Type": st.column_config.TextColumn("Setting", width=150),
-        "Total Score": st.column_config.ProgressColumn("Score", format="%d", min_value=0, max_value=100, width=80),
-        "LOC": st.column_config.NumberColumn("LOC", width=50),
-        "Clinical": st.column_config.NumberColumn("Clin", width=50),
-        "Acuity": st.column_config.NumberColumn("Acuity", width=50),
-        "Indicators": st.column_config.TextColumn("Flags", width=80),
+        "Score": st.column_config.ProgressColumn("Score", format="%d", min_value=0, max_value=100, width=80),
+        "Gaps": st.column_config.TextColumn("Missing Capabilities", width=180),
+        "Confidence": st.column_config.TextColumn("Data", width=80),
         "Source Row(s)": st.column_config.TextColumn("Source Row(s)", width=150)
     }
 )
 
 # Legend
 st.markdown("""
-**Indicators:** 🔀 Co-occurring | 💊 Detox | 🧠 SMI Programs | 💉¹ Basic MAT (1-2) | 💉² Standard MAT (3-4) | 💉³ Comprehensive MAT (5+)
+**Gap Codes:** MAT = No MAT | MAT+ = Limited MAT (<3 meds) | COD = No Co-Occurring | SMI = No SMI Programs | DTX = No Detox | Crisis = No Crisis Services  
+**Data Confidence:** ✓ High (90%+) | ~ Medium (70-89%) | ⚠ Low (<70%) - based on explicit vs inferred capabilities
 """)
+
+# Explanation of fuzzy logic
+with st.expander("ℹ️ About Scoring & Data Inference"):
+    st.markdown("""
+    **Fuzzy Logic Applied:**
+    - **SMI Programs**: Psychiatric hospitals assumed to treat SMI even without explicit code
+    - **Crisis Services**: Psych hospitals and hospital inpatient with detox assumed to have crisis capability
+    
+    **Data Confidence Score:**
+    - **High (✓)**: Most capabilities explicitly coded in SAMHSA data
+    - **Medium (~)**: Some capabilities inferred from facility type
+    - **Low (⚠)**: Significant inference used - verify during outreach
+    
+    **Gap Analysis:**
+    Shows what's missing to reach maximum score potential. Use gaps to:
+    - Prioritize facilities with fewer verification needs (— = no gaps)
+    - Identify what to ask about during discovery calls
+    - Focus on facilities closest to ideal profile
+    """)
 
 # Download
 st.download_button(
@@ -530,6 +654,28 @@ with st.expander("📊 View Summary Statistics"):
         col3.metric("Mean Score", f"{display_df['score'].mean():.1f}")
         col4.metric("Median Score", f"{display_df['score'].median():.1f}")
         col5.metric("Score Range", f"{display_df['score'].min():.0f} - {display_df['score'].max():.0f}")
+        
+        st.markdown("**Data Quality Metrics**")
+        col6, col7, col8 = st.columns(3)
+        col6.metric("Mean Confidence", f"{display_df['data_confidence'].mean():.0f}%")
+        col7.metric("High Confidence (✓)", f"{(display_df['data_confidence'] >= 90).sum()}")
+        col8.metric("Needs Verification (⚠)", f"{(display_df['data_confidence'] < 70).sum()}")
+        
+        # Gap analysis
+        st.markdown("**Most Common Gaps**")
+        all_gaps = []
+        for gaps_str in display_df['Gaps']:
+            if gaps_str != '—':
+                all_gaps.extend(gaps_str.split(' | '))
+        if all_gaps:
+            gap_counts = pd.Series(all_gaps).value_counts().head(5)
+            st.dataframe(
+                gap_counts.reset_index().rename(columns={'index': 'Gap', 0: 'Count'}),
+                hide_index=True,
+                use_container_width=True
+            )
+        else:
+            st.info("No gaps - all facilities are complete!")
 
 with st.expander("🔍 Debug Info - Data Quality Check"):
     st.markdown("**All Unique Setting Types in Data**")
