@@ -17,12 +17,19 @@ st.markdown("""
     /* CLEAN BUTTON STYLING */
     div[data-testid="column"] button {
         width: 100%;
-        margin-top: -15px; 
+        margin-top: -18px; /* Pulls button up to sit tight under the number (like a delta) */
         border: none;
+        border-radius: 8px; /* Soft rounded corners */
         background-color: #262730; 
         color: #ff4b4b; 
         font-weight: 600;
+        font-size: 14px;
+        display: flex;
+        justify-content: center; /* Centers the text/icon horizontally */
+        align-items: center;
         transition: all 0.2s;
+        padding: 0.25rem 0.5rem;
+        line-height: 1.2;
     }
     div[data-testid="column"] button:hover {
         background-color: #ff4b4b;
