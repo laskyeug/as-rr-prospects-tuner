@@ -15,13 +15,12 @@ st.markdown("""
     .stSlider {padding-top: 10px; padding-bottom: 20px;}
     
     /* CLEAN BUTTON STYLING */
-    /* Targets the button inside the metric column for a flat, integrated look */
     div[data-testid="column"] button {
         width: 100%;
         margin-top: -15px; 
         border: none;
-        background-color: #262730; /* Matches dark theme card */
-        color: #ff4b4b; /* Streamlit Red/Pink accent */
+        background-color: #262730; 
+        color: #ff4b4b; 
         font-weight: 600;
         transition: all 0.2s;
     }
@@ -30,17 +29,13 @@ st.markdown("""
         color: white;
         border: none;
     }
-    div[data-testid="column"] button:active {
-        box-shadow: none;
-        transform: translateY(1px);
-    }
     </style>
     """, unsafe_allow_html=True)
 
 # --- 2. SESSION STATE MANAGEMENT ---
-# Initialize the key 'max_show' if it doesn't exist
+# Set the default to 100 as requested
 if 'max_show' not in st.session_state:
-    st.session_state.max_show = 1000
+    st.session_state.max_show = 100
 
 # --- 3. DATA LOADING ---
 INFRA_CODES = {'HI', 'PSYH', 'RES', 'RL', 'RS', 'DT', 'ADTX', 'ODTX', 'BDTX', 'CDTX', 'MDTX', 'SUMH', 'MH', 'SA', 'OTP'}
@@ -121,9 +116,8 @@ st.sidebar.divider()
 st.sidebar.subheader("3. Cutoff & Limits")
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
 
-# CLEAN STATE HANDLING: No 'value=' argument prevents the warning.
-# We explicitly set step=1 to ensure we always get an INTEGER, fixing the crash.
-st.sidebar.number_input("Download Size (Rows)", key="max_show", step=1)
+# Input bound to session state, with min_value=1 to prevent 0
+st.sidebar.number_input("Download Size (Rows)", key="max_show", min_value=1, step=1)
 
 st.sidebar.divider()
 exclude_gov = st.sidebar.toggle("Exclude Govt/VAMC", value=True)
@@ -169,9 +163,7 @@ count_final = len(d_final)
 d_final = d_final.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
 
 # --- 6. TIE DETECTION ---
-# Force integer conversion to prevent TypeError crash
 current_limit = int(st.session_state.max_show)
-
 count_ties = 0
 has_hidden_ties = False
 
@@ -210,7 +202,6 @@ if has_hidden_ties:
     def add_ties():
         st.session_state.max_show += count_ties
         
-    # Clean, flat button
     c6.button("➕ Include Ties", on_click=add_ties)
 else:
     c6.empty()
