@@ -13,11 +13,14 @@ st.markdown("""
     div[data-testid="stMetric"] {padding: 0px 0px 5px 0px;}
     .stCheckbox {margin-bottom: -15px;}
     .stSlider {padding-top: 10px; padding-bottom: 20px;}
-    div[data-testid="stAlert"] {padding-top: 10px; padding-bottom: 10px;}
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. CODE CATEGORIZATION ---
+# --- 2. SESSION STATE INIT ---
+if 'max_show' not in st.session_state:
+    st.session_state.max_show = 1000
+
+# --- 3. CODE CATEGORIZATION ---
 INFRA_CODES = {'HI', 'PSYH', 'RES', 'RL', 'RS', 'DT', 'ADTX', 'ODTX', 'BDTX', 'CDTX', 'MDTX', 'SUMH', 'MH', 'SA', 'OTP'}
 CLINICAL_CODES = {'UB', 'MM', 'VTRL', 'BERI', 'GH', 'CO', 'VET', 'ADM', 'PW', 'SE', 'LABT', 'MSRV', 'METH', 'NXN'}
 PRIVATE_CODES = {'PVTP'}
@@ -63,7 +66,7 @@ def load_data():
             axis=1
         )
         
-        # Pre-calculate category counts for speed
+        # Pre-calculate category counts
         rollup['n_infra'] = rollup['service_code_info'].apply(lambda x: count_category(x, INFRA_CODES))
         rollup['n_clinical'] = rollup['service_code_info'].apply(lambda x: count_category(x, CLINICAL_CODES))
         rollup['n_private'] = rollup['service_code_info'].apply(lambda x: count_category(x, PRIVATE_CODES))
@@ -75,7 +78,7 @@ def load_data():
 
 d, total_raw = load_data()
 
-# --- 3. SCORING CONTROL BOARD ---
+# --- 4. SCORING CONTROL BOARD ---
 st.sidebar.title("🎛️ Scoring Controls")
 
 with st.sidebar.expander("1. Filter Care Types (Include)", expanded=True):
@@ -86,28 +89,31 @@ with st.sidebar.expander("1. Filter Care Types (Include)", expanded=True):
 st.sidebar.divider()
 
 st.sidebar.subheader("2. Define 'Propensity'")
-st.sidebar.caption("Adjust sliders to rank facilities:")
-
 # Factor Sliders
-w_infra = st.sidebar.slider("Infrastructure Weight", 1, 10, 5, help="Value of 'Big Iron' licenses")
-w_priv = st.sidebar.slider("Private Ownership Bonus", 0, 20, 10, help="Bonus for Private For-Profit")
-w_clin = st.sidebar.slider("Clinical Depth Weight", 1, 10, 3, help="Value of Medical capabilities")
-w_std = st.sidebar.slider("Standard Services Weight", 0, 5, 1, help="Value of generic Outpatient")
+w_infra = st.sidebar.slider("Infrastructure Weight", 1, 10, 5)
+w_priv = st.sidebar.slider("Private Ownership Bonus", 0, 20, 10)
+w_clin = st.sidebar.slider("Clinical Depth Weight", 1, 10, 3)
+w_std = st.sidebar.slider("Standard Services Weight", 0, 5, 1)
 
 st.sidebar.divider()
 
 st.sidebar.subheader("3. Cutoff & Limits")
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
-max_show = st.sidebar.number_input("Max Rows to Display", value=1000)
-include_ties = st.sidebar.toggle("Include Hidden Ties?", value=False, help="Automatically extend the list to include ALL facilities that tied with the lowest visible score.")
 
-# Settings
+# Max Rows now controlled by Session State
+max_show = st.sidebar.number_input(
+    "Max Rows to Display", 
+    value=st.session_state.max_show,
+    key="max_show_input",
+    on_change=lambda: st.session_state.update({"max_show": st.session_state.max_show_input})
+)
+
 st.sidebar.divider()
 exclude_gov = st.sidebar.toggle("Exclude Govt/VAMC", value=True)
 
-# --- 4. SCORING & WATERFALL ---
+# --- 5. SCORING & WATERFALL ---
 
-# Step 1-2: Universe & Unique (Done)
+# Steps 1-2
 count_unique = len(d)
 
 # Step 3: Care Type Fit
@@ -132,52 +138,49 @@ if patterns:
     d_services = d_services[d_services['service_code_info'].str.contains(combined_pattern, case=False, na=False)]
 else:
     pass 
-
 count_services = len(d_services)
 
 # Step 4: Score Fit
 d_scored = d_services[d_services['Propensity Score'] >= min_propensity]
 count_scored = len(d_scored)
 
-# Step 5: Total Qualified (Gov Filter)
+# Step 5: Final Qualified
 d_final = d_scored.copy()
 if exclude_gov:
     d_final = d_final[~d_final['service_code_info'].str.contains('STG|FED|VAMC', case=False, na=False)]
-
 count_final = len(d_final)
 
-# Sort Final List
+# Sort
 d_final = d_final.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
 
-# --- 5. TIE-BREAKER LOGIC ("FAIR CUTOFF") ---
+# --- 6. TIE DETECTION LOGIC ---
 count_ties = 0
 cutoff_score = 0
 display_df = d_final.copy()
+has_hidden_ties = False
 
-if count_final > max_show:
-    # Identify the score of the LAST record in the standard "Max Rows" cut
-    cutoff_record = d_final.iloc[max_show - 1] 
+if count_final > st.session_state.max_show:
+    # Check the last visible record
+    cutoff_record = d_final.iloc[st.session_state.max_show - 1] 
     cutoff_score = cutoff_record['Propensity Score']
     
-    # Check how many *hidden* records have the same score
-    hidden_records = d_final.iloc[max_show:]
+    # Check hidden records
+    hidden_records = d_final.iloc[st.session_state.max_show:]
     tie_matches = hidden_records[hidden_records['Propensity Score'] == cutoff_score]
     count_ties = len(tie_matches)
     
-    if include_ties and count_ties > 0:
-        # Extend the display list to include the ties
-        display_df = d_final.head(max_show + count_ties)
-    else:
-        # Strict Cutoff
-        display_df = d_final.head(max_show)
+    if count_ties > 0:
+        has_hidden_ties = True
+    
+    # Apply strict cut for display
+    display_df = d_final.head(st.session_state.max_show)
 else:
-    # Less records than max_show, show all
     display_df = d_final
 
-# --- 6. OUTPUT ---
+# --- 7. OUTPUT ---
 st.title("📊 Scored Prospects")
 
-# WATERFALL METRICS
+# METRICS
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("1. Universe", f"{total_raw:,}")
 c2.metric("2. Unique Locs", f"{count_unique:,}", delta=f"-{total_raw - count_unique:,}", delta_color="off")
@@ -185,18 +188,19 @@ c3.metric("3. Care Type Fit", f"{count_services:,}", delta=f"-{count_unique - co
 c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"-{count_services - count_scored:,}", delta_color="off")
 c5.metric("5. Total Qualified", f"{count_final:,}", delta=f"-{count_scored - count_final:,}", delta_color="off")
 
-# Dynamic 6th Metric for "Cutoff Risk"
-if count_ties > 0 and not include_ties:
-    c6.metric("6. Cutoff Risk", f"{count_ties:,} Ties", delta="⚠️ Hidden", delta_color="inverse", help=f"{count_ties} additional prospects have the same score ({cutoff_score}) as your cutoff record. Use the toggle to show them.")
-elif include_ties and count_ties > 0:
-    c6.metric("6. Bonus Added", f"+{count_ties:,}", delta="Included", delta_color="normal", help=f"List extended to capture all ties at score {cutoff_score}.")
+# 6th Metric: Dynamic based on hidden ties
+backlog = max(0, count_final - len(display_df))
+if has_hidden_ties:
+    c6.metric("6. Hidden Backlog", f"{backlog:,}", delta=f"⚠️ {count_ties} Ties", delta_color="inverse")
 else:
-    backlog = max(0, count_final - len(display_df))
     c6.metric("6. Hidden Backlog", f"{backlog:,}", delta="Below Cutoff", delta_color="off")
 
-# Interactive Alert
-if count_ties > 0 and not include_ties:
-    st.info(f"💡 **Fairness Alert:** There are **{count_ties}** additional facilities with a score of **{cutoff_score}** (same as the last record in your list). Toggle **'Include Hidden Ties'** in the sidebar to see them.")
+# --- THE CLEAN BUTTON ---
+if has_hidden_ties:
+    # Place button right below the metrics
+    if st.button(f"➕ Add {count_ties} hidden records with Score {cutoff_score} to current view"):
+        st.session_state.max_show += count_ties
+        st.rerun()
 
 # Search
 c_search, c_state = st.columns(2)
@@ -208,9 +212,8 @@ if states: display_df = display_df[display_df['state_clean'].isin(states)]
 
 # Table
 if display_df.empty:
-    st.warning("⚠️ No prospects found. Try loosening your filters.")
+    st.warning("⚠️ No prospects found.")
 else:
-    # Reset index for display rank
     output_df = display_df.reset_index(drop=True)
     output_df.index = output_df.index + 1
     output_df.index.name = "Rank"
