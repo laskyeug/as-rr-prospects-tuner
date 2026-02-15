@@ -28,6 +28,7 @@ hr {margin: 0.3rem 0 !important;}
 div[data-testid="stTextInput"], div[data-testid="stMultiSelect"] {margin-bottom: -0.5rem !important;}
 /* Align tie button with metric row */
 div[data-testid="stButton"] button {font-size: 0.8rem !important;}
+div[data-testid="stHorizontalBlock"] {align-items: flex-start !important;}
 .legend-text {font-size: 0.78rem; color: #808495; line-height: 1.4; margin-top: -0.3rem;}
 .legend-text b {color: #b0b4c0;}
 </style>
@@ -860,11 +861,9 @@ if count_ties > 0:
     if not (search or states):
         c6.metric("Ties", f"{count_ties:,}")
     with c7:
-        st.markdown('<div style="margin-top: 1.1rem;">', unsafe_allow_html=True)
         if st.button("➕ Include Ties"):
             st.session_state.pending_tie_add = count_ties
             st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
 
 # --- Gap analysis ---
 display_df = display_df.copy()
