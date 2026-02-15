@@ -16,7 +16,7 @@ st.markdown("""
     /* Button Styling to fit Metric Column */
     div.stButton > button {
         width: 100%;
-        margin-top: -15px; /* Pull button up closer to the number */
+        margin-top: -15px; 
     }
     </style>
     """, unsafe_allow_html=True)
@@ -105,12 +105,16 @@ st.sidebar.divider()
 st.sidebar.subheader("3. Cutoff & Limits")
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
 
-# "Download Size" controlled by Session State
-max_show = st.sidebar.number_input(
+# SYNC LOGIC: Function to sync widget -> state
+def update_max_show():
+    st.session_state.max_show = st.session_state.max_show_input
+
+# Max Rows Input (Linked to session state)
+st.sidebar.number_input(
     "Download Size (Rows)", 
     value=st.session_state.max_show,
     key="max_show_input",
-    on_change=lambda: st.session_state.update({"max_show": st.session_state.max_show_input})
+    on_change=update_max_show
 )
 
 st.sidebar.divider()
@@ -193,17 +197,15 @@ c3.metric("3. Care Type Fit", f"{count_services:,}", delta=f"-{count_unique - co
 c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"-{count_services - count_scored:,}", delta_color="off")
 c5.metric("5. Total Qualified", f"{count_final:,}", delta=f"-{count_scored - count_final:,}", delta_color="off")
 
-# 6th Metric: DYNAMIC ACTION
-backlog = max(0, count_final - len(display_df))
+# 6th Metric: ONLY APPEARS IF TIES EXIST
 if has_hidden_ties:
-    # Shows just the number, no confusing delta
     c6.metric("6. Hidden Ties", f"{count_ties:,}")
-    # Button takes the place of the delta/subtitle
     if c6.button("➕ Adjust Download Size"):
-        st.session_state.max_show += count_ties
+        new_total = st.session_state.max_show + count_ties
+        # Update BOTH state variables to force sync
+        st.session_state.max_show = new_total
+        st.session_state.max_show_input = new_total
         st.rerun()
-else:
-    c6.metric("6. Hidden Backlog", f"{backlog:,}", delta="Below Cutoff", delta_color="off")
 
 # Search
 c_search, c_state = st.columns(2)
