@@ -13,6 +13,7 @@ st.markdown("""
     div[data-testid="stMetric"] {padding: 0px 0px 5px 0px;}
     .stCheckbox {margin-bottom: -15px;}
     .stSlider {padding-top: 10px; padding-bottom: 20px;}
+    div[data-testid="stAlert"] {padding-top: 10px; padding-bottom: 10px;}
     </style>
     """, unsafe_allow_html=True)
 
@@ -95,20 +96,18 @@ w_std = st.sidebar.slider("Standard Services Weight", 0, 5, 1, help="Value of ge
 
 st.sidebar.divider()
 
-st.sidebar.subheader("3. Cutoff")
+st.sidebar.subheader("3. Cutoff & Limits")
 min_propensity = st.sidebar.slider("Min. Score Threshold", 0, 100, 40)
+max_show = st.sidebar.number_input("Max Rows to Display", value=1000)
+include_ties = st.sidebar.toggle("Include Hidden Ties?", value=False, help="Automatically extend the list to include ALL facilities that tied with the lowest visible score.")
 
 # Settings
 st.sidebar.divider()
 exclude_gov = st.sidebar.toggle("Exclude Govt/VAMC", value=True)
-max_show = st.sidebar.number_input("Max Rows", value=1000)
 
-# --- 4. SCORING & WATERFALL CALCULATION ---
+# --- 4. SCORING & WATERFALL ---
 
-# Step 1: Universe
-# (total_raw calculated in load_data)
-
-# Step 2: Unique Locations
+# Step 1-2: Universe & Unique (Done)
 count_unique = len(d)
 
 # Step 3: Care Type Fit
@@ -140,7 +139,7 @@ count_services = len(d_services)
 d_scored = d_services[d_services['Propensity Score'] >= min_propensity]
 count_scored = len(d_scored)
 
-# Step 5: Final List
+# Step 5: Total Qualified (Gov Filter)
 d_final = d_scored.copy()
 if exclude_gov:
     d_final = d_final[~d_final['service_code_info'].str.contains('STG|FED|VAMC', case=False, na=False)]
@@ -150,30 +149,69 @@ count_final = len(d_final)
 # Sort Final List
 d_final = d_final.sort_values(by=['Propensity Score', 'Location', 'name1'], ascending=[False, True, True])
 
+# --- 5. TIE-BREAKER LOGIC ("FAIR CUTOFF") ---
+count_ties = 0
+cutoff_score = 0
+display_df = d_final.copy()
+
+if count_final > max_show:
+    # Identify the score of the LAST record in the standard "Max Rows" cut
+    cutoff_record = d_final.iloc[max_show - 1] 
+    cutoff_score = cutoff_record['Propensity Score']
+    
+    # Check how many *hidden* records have the same score
+    hidden_records = d_final.iloc[max_show:]
+    tie_matches = hidden_records[hidden_records['Propensity Score'] == cutoff_score]
+    count_ties = len(tie_matches)
+    
+    if include_ties and count_ties > 0:
+        # Extend the display list to include the ties
+        display_df = d_final.head(max_show + count_ties)
+    else:
+        # Strict Cutoff
+        display_df = d_final.head(max_show)
+else:
+    # Less records than max_show, show all
+    display_df = d_final
+
 # --- 6. OUTPUT ---
 st.title("📊 Scored Prospects")
 
 # WATERFALL METRICS
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("1. Universe", f"{total_raw:,}", help="Raw rows in spreadsheet")
-c2.metric("2. Unique Locs", f"{count_unique:,}", delta=f"{count_unique - total_raw:,}", help="After merging SUD/MH duplicates")
-c3.metric("3. Care Type Fit", f"{count_services:,}", delta=f"{count_services - count_unique:,}", help="Matches selected Care Types")
-c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"{count_scored - count_services:,}", help="Meets Min. Propensity Score")
-c5.metric("5. Final List", f"{count_final:,}", delta=f"{count_final - count_scored:,}", help="After removing Govt/VAMC")
+c1, c2, c3, c4, c5, c6 = st.columns(6)
+c1.metric("1. Universe", f"{total_raw:,}")
+c2.metric("2. Unique Locs", f"{count_unique:,}", delta=f"-{total_raw - count_unique:,}", delta_color="off")
+c3.metric("3. Care Type Fit", f"{count_services:,}", delta=f"-{count_unique - count_services:,}", delta_color="off")
+c4.metric("4. Score Fit", f"{count_scored:,}", delta=f"-{count_services - count_scored:,}", delta_color="off")
+c5.metric("5. Total Qualified", f"{count_final:,}", delta=f"-{count_scored - count_final:,}", delta_color="off")
+
+# Dynamic 6th Metric for "Cutoff Risk"
+if count_ties > 0 and not include_ties:
+    c6.metric("6. Cutoff Risk", f"{count_ties:,} Ties", delta="⚠️ Hidden", delta_color="inverse", help=f"{count_ties} additional prospects have the same score ({cutoff_score}) as your cutoff record. Use the toggle to show them.")
+elif include_ties and count_ties > 0:
+    c6.metric("6. Bonus Added", f"+{count_ties:,}", delta="Included", delta_color="normal", help=f"List extended to capture all ties at score {cutoff_score}.")
+else:
+    backlog = max(0, count_final - len(display_df))
+    c6.metric("6. Hidden Backlog", f"{backlog:,}", delta="Below Cutoff", delta_color="off")
+
+# Interactive Alert
+if count_ties > 0 and not include_ties:
+    st.info(f"💡 **Fairness Alert:** There are **{count_ties}** additional facilities with a score of **{cutoff_score}** (same as the last record in your list). Toggle **'Include Hidden Ties'** in the sidebar to see them.")
 
 # Search
 c_search, c_state = st.columns(2)
 search = c_search.text_input("🔍 Search Facility Name").lower()
 states = c_state.multiselect("📍 Filter by State", options=sorted(d['state_clean'].unique()))
 
-if search: d_final = d_final[d_final['name1'].str.lower().str.contains(search)]
-if states: d_final = d_final[d_final['state_clean'].isin(states)]
+if search: display_df = display_df[display_df['name1'].str.lower().str.contains(search)]
+if states: display_df = display_df[display_df['state_clean'].isin(states)]
 
 # Table
-if d_final.empty:
+if display_df.empty:
     st.warning("⚠️ No prospects found. Try loosening your filters.")
 else:
-    output_df = d_final.head(max_show).reset_index(drop=True)
+    # Reset index for display rank
+    output_df = display_df.reset_index(drop=True)
     output_df.index = output_df.index + 1
     output_df.index.name = "Rank"
 
