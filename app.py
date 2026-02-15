@@ -91,15 +91,25 @@ def calculate_loc_score(row, weights=None):
 def calculate_sophistication_score(row, weights=None):
     """Calculate Clinical Sophistication score (0-30 points)"""
     if weights is None:
-        weights = {'mat': 4, 'psych': 3, 'med': 2}
+        weights = {'mat_basic': 10, 'mat_standard': 15, 'mat_comprehensive': 20, 'psych': 3, 'med': 2}
     
     codes = str(row['service_code_info']).upper()
     
+    # Tiered MAT scoring (instead of linear per-med)
     mat_count = count_codes(codes, CLINICAL_SOPHISTICATION['MAT_MEDICATIONS'])
+    if mat_count == 0:
+        mat_score = 0
+    elif mat_count <= 2:
+        mat_score = weights['mat_basic']  # Basic MAT: 10 pts
+    elif mat_count <= 4:
+        mat_score = weights['mat_standard']  # Standard MAT: 15 pts
+    else:
+        mat_score = weights['mat_comprehensive']  # Comprehensive MAT: 20 pts
+    
     psych_count = count_codes(codes, CLINICAL_SOPHISTICATION['PSYCH_SERVICES'])
     medical_count = count_codes(codes, CLINICAL_SOPHISTICATION['MEDICAL_SERVICES'])
     
-    score = (mat_count * weights['mat']) + (psych_count * weights['psych']) + (medical_count * weights['med'])
+    score = mat_score + (psych_count * weights['psych']) + (medical_count * weights['med'])
     
     return min(30, score)  # Cap at 30
 
@@ -203,9 +213,10 @@ def load_data():
         df['has_detox'] = df['service_code_info'].apply(
             lambda x: has_code(x, ACUITY_INDICATORS['DETOX'])
         )
-        df['has_mat'] = df['service_code_info'].apply(
-            lambda x: count_codes(x, CLINICAL_SOPHISTICATION['MAT_MEDICATIONS']) > 0
+        df['mat_count'] = df['service_code_info'].apply(
+            lambda x: count_codes(x, CLINICAL_SOPHISTICATION['MAT_MEDICATIONS'])
         )
+        df['has_mat'] = df['mat_count'] > 0
         
         # Roll up by location (keep highest scoring record for each name+city+state)
         rollup = df.sort_values('score', ascending=False).groupby(
@@ -225,6 +236,7 @@ def load_data():
             'has_cooccurring': 'max',
             'has_smi': 'max',
             'has_detox': 'max',
+            'mat_count': 'max',
             'has_mat': 'max'
         })
         
@@ -266,7 +278,13 @@ st.sidebar.divider()
 
 with st.sidebar.expander("💊 Other Treatments", expanded=False):
     require_cooccurring = st.checkbox("Co-Occurring Disorders (COD)", value=False)
-    require_mat = st.checkbox("Medication-Assisted Therapy (MAT)", value=False)
+    
+    mat_filter = st.selectbox(
+        "Medication-Assisted Therapy (MAT)",
+        options=["Any/No Filter", "Has MAT (1+ meds)", "Standard MAT (3+ meds)", "Comprehensive MAT (5+ meds)"],
+        index=0
+    )
+    
     require_smi = st.checkbox("Severe Mental Illness (SMI)", value=False)
 
 st.sidebar.divider()
@@ -286,7 +304,11 @@ with st.sidebar.expander("⚙️ Advanced - Adjust Scoring Weights", expanded=Fa
     w_res = st.number_input("Residential", 0, 100, 25, 5, key="w_res")
     
     st.markdown("**Clinical Sophistication Weights**")
-    w_mat = st.number_input("MAT Medications (each)", 0, 10, 4, 1, key="w_mat")
+    st.caption("MAT Scoring (Tiered)")
+    w_mat_basic = st.number_input("Basic MAT (1-2 meds)", 0, 30, 10, 1, key="w_mat_basic")
+    w_mat_standard = st.number_input("Standard MAT (3-4 meds)", 0, 30, 15, 1, key="w_mat_standard")
+    w_mat_comp = st.number_input("Comprehensive MAT (5+ meds)", 0, 30, 20, 1, key="w_mat_comp")
+    st.caption("Other Clinical Services")
     w_psych_svc = st.number_input("Psych Services (each)", 0, 10, 3, 1, key="w_psych_svc")
     w_med = st.number_input("Medical Services (each)", 0, 10, 2, 1, key="w_med")
     
@@ -336,8 +358,15 @@ count_scored = len(d_work)
 # Apply capability filters
 if require_cooccurring:
     d_work = d_work[d_work['has_cooccurring']]
-if require_mat:
-    d_work = d_work[d_work['has_mat']]
+
+# Apply MAT tier filter
+if mat_filter == "Has MAT (1+ meds)":
+    d_work = d_work[d_work['mat_count'] >= 1]
+elif mat_filter == "Standard MAT (3+ meds)":
+    d_work = d_work[d_work['mat_count'] >= 3]
+elif mat_filter == "Comprehensive MAT (5+ meds)":
+    d_work = d_work[d_work['mat_count'] >= 5]
+
 if require_smi:
     d_work = d_work[d_work['has_smi']]
 
@@ -401,11 +430,21 @@ if states:
     display_df = display_df[display_df['state_clean'].isin(states)]
 
 # Add indicators column
+def get_mat_indicator(count):
+    if count == 0:
+        return ''
+    elif count <= 2:
+        return '💉¹'  # Basic
+    elif count <= 4:
+        return '💉²'  # Standard
+    else:
+        return '💉³'  # Comprehensive
+
 display_df['Indicators'] = (
     display_df['has_cooccurring'].map({True: '🔀', False: ''}) + 
     display_df['has_detox'].map({True: '💊', False: ''}) +
     display_df['has_smi'].map({True: '🧠', False: ''}) +
-    display_df['has_mat'].map({True: '💉', False: ''})
+    display_df['mat_count'].apply(get_mat_indicator)
 ).str.strip()
 
 # Prepare display
@@ -446,7 +485,7 @@ st.dataframe(
 
 # Legend
 st.markdown("""
-**Indicators:** 🔀 Co-occurring | 💊 Detox | 🧠 SMI Programs | 💉 MAT Capable
+**Indicators:** 🔀 Co-occurring | 💊 Detox | 🧠 SMI Programs | 💉¹ Basic MAT (1-2) | 💉² Standard MAT (3-4) | 💉³ Comprehensive MAT (5+)
 """)
 
 # Download
@@ -518,5 +557,5 @@ with st.expander("🔍 Debug Info - Data Quality Check"):
     st.write(f"- Min Total Score: {min_total_score}")
     st.write(f"- Exclude Government: {exclude_govt}")
     st.write(f"- Require COD: {require_cooccurring}")
-    st.write(f"- Require MAT: {require_mat}")
+    st.write(f"- MAT Filter: {mat_filter}")
     st.write(f"- Require SMI: {require_smi}")
